@@ -6,15 +6,14 @@ Backup Scripts gives ideas do generate backup of webservers and databases for ba
 [![Watchers](https://img.shields.io/github/watchers/ivancarlosti/bkpscripts?label=Watchers&style=flat&color=red)](https://github.com/sponsors/ivancarlosti)
 [![Forks](https://img.shields.io/github/forks/ivancarlosti/bkpscripts?label=Forks&style=flat&color=ff69b4)](https://github.com/sponsors/ivancarlosti)
 [![Downloads](https://img.shields.io/github/downloads/ivancarlosti/bkpscripts/total?label=Downloads&color=success)](https://github.com/ivancarlosti/bkpscripts/releases)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/ivancarlosti/bkpscripts?label=Activity)](https://github.com/ivancarlosti/bkpscripts/pulse)  
-[![GitHub Issues](https://img.shields.io/github/issues/ivancarlosti/bkpscripts?label=Issues&color=orange)](https://github.com/ivancarlosti/bkpscripts/issues)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/ivancarlosti/bkpscripts?label=Activity)](https://github.com/ivancarlosti/bkpscripts/pulse)
+[![GitHub Issues](https://img.shields.io/github/issues/ivancarlosti/bkpscripts?label=Issues&color=orange)](https://github.com/ivancarlosti/bkpscripts/issues)  
 [![License](https://img.shields.io/github/license/ivancarlosti/bkpscripts?label=License)](LICENSE)
 [![GitHub last commit](https://img.shields.io/github/last-commit/ivancarlosti/bkpscripts?label=Last%20Commit)](https://github.com/ivancarlosti/bkpscripts/commits)
-[![Security](https://img.shields.io/badge/Security-View%20Here-purple)](https://github.com/ivancarlosti/bkpscripts/security)  
-[![Code of Conduct](https://img.shields.io/badge/Code%20of%20Conduct-2.1-4baaaa)](https://github.com/ivancarlosti/bkpscripts?tab=coc-ov-file)
+[![Security](https://img.shields.io/badge/Security-View%20Here-purple)](https://github.com/ivancarlosti/bkpscripts/security)
+[![Code of Conduct](https://img.shields.io/badge/Code%20of%20Conduct-2.1-4baaaa)](https://github.com/ivancarlosti/bkpscripts?tab=coc-ov-file)  
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/ivancarlosti?label=GitHub%20Sponsors&color=ffc0cb)][sponsor]
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00)][buymeacoffee]
-[![Patreon](https://img.shields.io/badge/Patreon-f96854)][patreon]
 <!-- endbuttons -->
 
 ## Instructions
