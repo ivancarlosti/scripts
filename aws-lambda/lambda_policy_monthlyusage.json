@@ -1,0 +1,24 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ce:GetCostAndUsage",
+                "ce:GetCostAndUsageWithResources",
+                "ce:GetCostForecast",
+                "ce:GetDimensionValues",
+                "ce:GetReservationCoverage",
+                "ce:GetReservationPurchaseRecommendation",
+                "ce:GetReservationUtilization",
+                "ce:GetRightsizingRecommendation",
+                "ce:GetSavingsPlansCoverage",
+                "ce:GetSavingsPlansPurchaseRecommendation",
+                "ce:GetSavingsPlansUtilization",
+                "ce:GetTags",
+                "ce:GetUsageForecast"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
