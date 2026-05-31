@@ -57,9 +57,9 @@ export default {
         await message.forward(securityInbox);
       } else {
         const rejectMessage = 
-          `Requested action not taken: mailbox unavailable. If you believe this is an error, please send a message to ${contactInbox}.\n` +
-          `Acao solicitada nao realizada: caixa postal indisponivel. Se voce acha que isso e um erro, por favor envie uma mensagem para ${contactInbox}.\n` +
-          `Accion solicitada no realizada: buzon no disponible. Si cree que esto es un error, por favor envie un mensaje a ${contactInbox}.`;
+          `[EN] Requested action not taken: mailbox unavailable. If you believe this is an error, please send a message to ${contactInbox}.\n` +
+          `[PT] Acao solicitada nao realizada: caixa postal indisponivel. Se voce acha que isso e um erro, por favor envie uma mensagem para ${contactInbox}.\n` +
+          `[ES] Accion solicitada no realizada: buzon no disponible. Si cree que esto es un error, por favor envie un mensaje a ${contactInbox}.`;
 
         message.setReject(rejectMessage);
       }
