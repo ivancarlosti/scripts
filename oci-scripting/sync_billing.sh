@@ -10,7 +10,7 @@ SYSTEM_USER="n8nbilling"
 BILLING_NAMESPACE="bling"
 BILLING_BUCKET="<<oci bucket ocid>>"
 
-# Local destination directory for downloaded files 
+# Local destination directory for downloaded files
 # (Absolute path recommended for cron compatibility)
 DEST_DIR="/home/${SYSTEM_USER}/oci_billing"
 
