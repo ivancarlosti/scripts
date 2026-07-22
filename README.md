@@ -11,7 +11,6 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 .scripts/
 ├── LICENSE                                  # MIT License
 ├── manifest.json                            # Version & author metadata
-├── rclone.sh                                # Standalone backup script (DB + web dirs → rclone)
 │
 ├── README.md                                # This file — project overview
 ├── README-aws-lambda.md                     # AWS Lambda functions & IAM policies
@@ -84,18 +83,6 @@ Shell scripts for Oracle Cloud Infrastructure (OCI) automation.
 | 1 | `sync_billing.sh` | Downloads OCI billing files from Object Storage with incremental sync and local retention cleanup |
 
 📖 See **[README-oci-scripting.md](README-oci-scripting.md)** for requirements (OCI CLI, jq), configuration, and cron setup.
-
----
-
-## 🔧 Root Files
-
-| File | Description |
-|------|-------------|
-| [`LICENSE`](LICENSE) | MIT License (Copyright © 2025 Ivan Carlos de Almeida) |
-| [`manifest.json`](manifest.json) | Version (`4.0.11`) and author metadata |
-| [`rclone.sh`](rclone.sh) | Standalone backup — dumps DB, compresses web dirs, uploads to rclone remote with retention |
-
----
 
 <!-- footer -->
 ---
