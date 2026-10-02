@@ -3,7 +3,48 @@
 # Branches config on the installed nginx build so outdated packages do not
 # receive directives they reject (quic, http3, http2 on, ssl_reject_handshake,
 # ssl_conf_command, brotli).
+#
+# Diagnostics - added so a silent stop is impossible:
+#   * every step is announced, so you can see exactly how far it got;
+#   * an ERR trap prints the failing line, the command and the exit code;
+#   * run with VERBOSE=1 for a full shell trace of every command:
+#         curl -fsSL <raw-url> | sudo VERBOSE=1 bash
+#   * the screen is NOT cleared by default so the log is preserved; set
+#     CLEAR_SCREEN=1 to restore the old "clear" behaviour.
 set -euo pipefail
+set -E   # let the ERR trap fire inside functions, subshells and $( ) as well
+
+########## Diagnostics helpers ##########
+VERBOSE="${VERBOSE:-0}"
+CLEAR_SCREEN="${CLEAR_SCREEN:-0}"
+STEP=0
+
+if [ -t 1 ]; then
+    C_B=$'\033[1;34m'; C_R=$'\033[1;31m'; C_0=$'\033[0m'
+else
+    C_B=''; C_R=''; C_0=''
+fi
+
+step() { STEP=$((STEP + 1)); printf '%s==> [step %02d] %s%s\n' "$C_B" "$STEP" "$*" "$C_0"; }
+info() { printf '    - %s\n' "$*"; }
+warn() { printf '%s    ! %s%s\n' "$C_R" "$*" "$C_0" >&2; }
+
+on_error() {
+    local code=$? cmd=$BASH_COMMAND line=${BASH_LINENO[0]}
+    trap - ERR   # captured $? first; avoid recursive traps
+    printf '\n%s!!! ABORTED at line %s (exit code %s)%s\n' "$C_R" "$line" "$code" "$C_0" >&2
+    printf '    failing command : %s\n' "$cmd" >&2
+    printf '    script          : %s\n' "${BASH_SOURCE[0]:-$0}" >&2
+    printf '    next step       : re-run with a full trace to see the cause:\n' >&2
+    printf '                      curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/cloudpanel-fix.sh | sudo VERBOSE=1 bash\n' >&2
+    exit "$code"
+}
+trap on_error ERR
+
+if [ "$VERBOSE" = "1" ]; then
+    PS4='+ ${BASH_SOURCE##*/}:${LINENO}: '
+    set -x
+fi
 
 ########## Detect nginx version and optional modules ##########
 # quic / http3 on          : nginx >= 1.25.0 built with --with-http_v3_module
@@ -38,6 +79,28 @@ fi
 
 echo "nginx ${NGINX_VER}: http3=${NGINX_HTTP3} http2_directive=${NGINX_HTTP2_DIRECTIVE} modern_ssl=${NGINX_MODERN_SSL} brotli=${NGINX_BROTLI}"
 
+step "Preflight: environment and expected files"
+info "running as      : $(id -un) (uid $(id -u))"
+info "nginx version   : ${NGINX_VER:-unknown}"
+info "nginx features  : http3=${NGINX_HTTP3} http2_directive=${NGINX_HTTP2_DIRECTIVE} modern_ssl=${NGINX_MODERN_SSL} brotli=${NGINX_BROTLI}"
+for tool in sudo nginx fail2ban-client jq sed awk sort grep; do
+    if command -v "$tool" > /dev/null 2>&1; then
+        info "tool present    : $tool"
+    else
+        warn "tool MISSING    : $tool (the step that needs it will fail)"
+    fi
+done
+for path in /etc/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled \
+            /etc/nginx/cloudflare/ips /etc/nginx/ssl/dhparams.pem \
+            /etc/fail2ban/action.d/ui-custom-action.conf; do
+    if sudo test -e "$path"; then
+        info "path present    : $path"
+    else
+        warn "path MISSING    : $path"
+    fi
+done
+
+step "Installing /usr/local/bin/cf-fail2ban.sh (Cloudflare ban/unban helper)"
 ########## Write /usr/local/bin/cf-fail2ban.sh file to enable CloudFlare ban/unban calls ##########
 sudo tee /usr/local/bin/cf-fail2ban.sh > /dev/null << 'EOF'
 #!/bin/bash
@@ -67,11 +130,13 @@ fi
 EOF
 ########## Make /usr/local/bin/cf-fail2ban.sh executable ##########
 sudo chmod +x /usr/local/bin/cf-fail2ban.sh
+step "Wiring the Cloudflare action into Fail2Ban (ui-custom-action.conf)"
 ########## Update /etc/fail2ban/action.d/ui-custom-action.conf to trigger CF script by Fail2Ban ##########
 sudo grep -q "cf-fail2ban.sh ban" /etc/fail2ban/action.d/ui-custom-action.conf || \
 sudo sed -i 's|^actionban = |actionban = /usr/local/bin/cf-fail2ban.sh ban "<name>" "<ip>"\n            |' /etc/fail2ban/action.d/ui-custom-action.conf
 sudo grep -q "cf-fail2ban.sh unban" /etc/fail2ban/action.d/ui-custom-action.conf || \
 sudo sed -i 's|^actionunban = |actionunban = /usr/local/bin/cf-fail2ban.sh unban "<name>" "<ip>"\n              |' /etc/fail2ban/action.d/ui-custom-action.conf
+step "Installing the cron job that refreshes cloudflare_realip.conf daily"
 ########## Add crontab to read cloudflare/ips and write conf.d/cloudflare_realip.conf for nginx ##########
 # The "|| true" keeps "set -e" from aborting when root has no crontab yet (crontab -l
 # exits 1) or when grep -v selects nothing; previously that killed the whole script.
@@ -80,6 +145,7 @@ sudo sed -i 's|^actionunban = |actionunban = /usr/local/bin/cf-fail2ban.sh unban
     echo "49 7 * * * sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips > /etc/nginx/conf.d/cloudflare_realip.conf && systemctl reload nginx"
 } | sudo crontab -
 
+step "Rewriting /etc/nginx/nginx.conf"
 ########## Rewrite nginx.conf file ##########
 # Shared body. ssl_conf_command and brotli are appended only when the build accepts them.
 sudo tee /etc/nginx/nginx.conf > /dev/null << 'EOF'
@@ -152,6 +218,7 @@ http {
     }
 }
 EOF
+step "Writing conf.d/ssl_ktls.conf and conf.d/brotli.conf"
 ########## Write ssl_ktls.conf (nginx >= 1.19.4 only; empty on outdated builds) ##########
 if [ "$NGINX_MODERN_SSL" = "1" ]; then
 sudo tee /etc/nginx/conf.d/ssl_ktls.conf > /dev/null << 'EOF'
@@ -163,6 +230,7 @@ sudo tee /etc/nginx/conf.d/ssl_ktls.conf > /dev/null << 'EOF'
 EOF
 fi
 ########## Write brotli.conf (only when ngx_brotli is installed; empty otherwise) ##########
+info "ngx_brotli present=${NGINX_BROTLI} (0 means brotli directives are omitted)"
 if [ "$NGINX_BROTLI" = "1" ]; then
 sudo tee /etc/nginx/conf.d/brotli.conf > /dev/null << 'EOF'
 brotli on;
@@ -176,6 +244,7 @@ sudo tee /etc/nginx/conf.d/brotli.conf > /dev/null << 'EOF'
 EOF
 fi
 
+step "Writing /etc/nginx/global_settings"
 ########## Rewrite global_settings file ##########
 if [ "$NGINX_HTTP3" = "1" ]; then
 ########## global_settings with Alt-Svc (HTTP/3 capable nginx) ##########
@@ -258,6 +327,7 @@ sudo tee /etc/nginx/global_settings > /dev/null << 'EOF'
 EOF
 fi
 
+step "Writing /etc/nginx/security_headers"
 ########## Write security_headers file ##########
 if [ "$NGINX_HTTP3" = "1" ]; then
 ########## security_headers with Alt-Svc (HTTP/3 capable nginx) ##########
@@ -286,6 +356,7 @@ sudo tee /etc/nginx/security_headers > /dev/null << 'EOF'
 EOF
 fi
 
+step "Rewriting /etc/nginx/sites-enabled/default.conf"
 ########## Rewrite sites-enabled/default.conf ##########
 if [ "$NGINX_HTTP3" = "1" ]; then
 ########## default.conf with QUIC listeners (HTTP/3 capable nginx) ##########
@@ -358,6 +429,7 @@ server {
 EOF
 fi
 
+step "Removing legacy GEOIP config and disabling every nginx module except brotli"
 ########## Remove all legacy GEOIP features ##########
 sudo find /etc/nginx -type f -exec sed -i '/GEOIP_/Id' {} +
 sudo rm -rf /etc/nginx/geoip
@@ -368,6 +440,7 @@ sudo rm -f /usr/share/nginx/modules-available/mod-http-geoip.conf
 # nullglob avoids a literal "*.conf" rename when modules-enabled is empty
 # any *brotli* snippet is kept, not only 50-mod-ngx-brotli.conf
 sudo bash -c 'cd /etc/nginx/modules-enabled && shopt -s nullglob && for f in *.conf; do [[ "$f" == *brotli* ]] && continue; mv "$f" "${f%.conf}.disabled"; done'
+step "Rewriting /etc/nginx/sites-enabled/custom-domain.conf"
 ########## Rewrite custom-domain.conf file ##########
 DOMAIN=$(sudo grep -m1 -E '^\s*server_name\s+' /etc/nginx/sites-enabled/custom-domain.conf 2>/dev/null \
     | sed -e 's/^[[:space:]]*server_name[[:space:]]\+//' -e 's/;.*//' || true)
@@ -504,9 +577,27 @@ server {
 }
 EOF
 fi
-clear || true
+if [ "$CLEAR_SCREEN" = "1" ]; then clear || true; fi
 ########## Execute crontab line, test and restart fail2ban & nginx ##########
-sudo sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips | sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null
-sudo fail2ban-client -t && sudo fail2ban-client reload
+step "Regenerating /etc/nginx/conf.d/cloudflare_realip.conf"
+if sudo test -f /etc/nginx/cloudflare/ips; then
+    sudo sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips | sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null
+    info "derived from /etc/nginx/cloudflare/ips"
+else
+    warn "/etc/nginx/cloudflare/ips not found; writing an empty cloudflare_realip.conf so nginx -t still passes"
+    sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null << 'EOF'
+# /etc/nginx/cloudflare/ips was not found when cloudpanel-fix.sh ran
+EOF
+fi
+step "Validating and reloading Fail2Ban"
+if command -v fail2ban-client > /dev/null 2>&1; then
+    sudo fail2ban-client -t && sudo fail2ban-client reload
+    info "fail2ban reloaded"
+else
+    warn "fail2ban-client not installed; skipping Fail2Ban validation/reload"
+fi
+step "Validating and reloading nginx"
 sudo nginx -t && sudo systemctl reload nginx
+info "nginx reloaded"
 echo "Applied nginx ${NGINX_VER} profile: http3=${NGINX_HTTP3} http2_directive=${NGINX_HTTP2_DIRECTIVE} modern_ssl=${NGINX_MODERN_SSL} brotli=${NGINX_BROTLI}"
+step "All done"

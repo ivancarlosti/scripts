@@ -101,6 +101,19 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 5. Generates `cloudflare_realip.conf` from the Cloudflare IP ranges and adds a cron job to refresh it.
 6. Tests and reloads Fail2Ban and nginx.
 
+**Diagnostics:** every step is printed as `==> [step NN] …`, and if any command fails the script prints the failing line, the command and the exit code instead of stopping silently:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/cloudpanel-fix.sh | sudo bash
+# full per-command trace (useful when a step fails):
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/cloudpanel-fix.sh | sudo VERBOSE=1 bash
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
+| `CLEAR_SCREEN=1` | Restores the old behaviour of clearing the terminal before the final reload |
+
 **⚠️ Before running:** set the `CF_ACCOUNT` and `CF_TOKEN` values inside the script (Cloudflare account ID and an Account Firewall Access Rules token).
 
 ---
