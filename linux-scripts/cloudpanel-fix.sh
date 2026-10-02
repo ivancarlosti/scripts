@@ -73,7 +73,12 @@ sudo sed -i 's|^actionban = |actionban = /usr/local/bin/cf-fail2ban.sh ban "<nam
 sudo grep -q "cf-fail2ban.sh unban" /etc/fail2ban/action.d/ui-custom-action.conf || \
 sudo sed -i 's|^actionunban = |actionunban = /usr/local/bin/cf-fail2ban.sh unban "<name>" "<ip>"\n              |' /etc/fail2ban/action.d/ui-custom-action.conf
 ########## Add crontab to read cloudflare/ips and write conf.d/cloudflare_realip.conf for nginx ##########
-(sudo crontab -l 2>/dev/null | grep -v 'cloudflare_realip.conf'; echo "49 7 * * * sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips > /etc/nginx/conf.d/cloudflare_realip.conf && systemctl reload nginx") | sudo crontab -
+# The "|| true" keeps "set -e" from aborting when root has no crontab yet (crontab -l
+# exits 1) or when grep -v selects nothing; previously that killed the whole script.
+{
+    sudo crontab -l 2>/dev/null | grep -v 'cloudflare_realip.conf' || true
+    echo "49 7 * * * sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips > /etc/nginx/conf.d/cloudflare_realip.conf && systemctl reload nginx"
+} | sudo crontab -
 
 ########## Rewrite nginx.conf file ##########
 # Shared body. ssl_conf_command and brotli are appended only when the build accepts them.
@@ -364,7 +369,8 @@ sudo rm -f /usr/share/nginx/modules-available/mod-http-geoip.conf
 # any *brotli* snippet is kept, not only 50-mod-ngx-brotli.conf
 sudo bash -c 'cd /etc/nginx/modules-enabled && shopt -s nullglob && for f in *.conf; do [[ "$f" == *brotli* ]] && continue; mv "$f" "${f%.conf}.disabled"; done'
 ########## Rewrite custom-domain.conf file ##########
-DOMAIN=$(sudo grep -m1 -E '^\s*server_name\s+' /etc/nginx/sites-enabled/custom-domain.conf | sed -e 's/^[[:space:]]*server_name[[:space:]]\+//' -e 's/;.*//')
+DOMAIN=$(sudo grep -m1 -E '^\s*server_name\s+' /etc/nginx/sites-enabled/custom-domain.conf 2>/dev/null \
+    | sed -e 's/^[[:space:]]*server_name[[:space:]]\+//' -e 's/;.*//' || true)
 if [ "$NGINX_HTTP3" = "1" ] && [ "$NGINX_HTTP2_DIRECTIVE" = "1" ]; then
 ########## custom-domain.conf with QUIC + http2/http3 directives (nginx >= 1.25.1 with http_v3) ##########
 cat << 'EOF' | sed "s/{{DOMAIN}}/$DOMAIN/g" | sudo tee /etc/nginx/sites-enabled/custom-domain.conf > /dev/null
@@ -498,7 +504,7 @@ server {
 }
 EOF
 fi
-clear
+clear || true
 ########## Execute crontab line, test and restart fail2ban & nginx ##########
 sudo sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips | sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null
 sudo fail2ban-client -t && sudo fail2ban-client reload
