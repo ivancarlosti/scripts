@@ -1,6 +1,6 @@
 # .scripts
 
-Collection of utility scripts for AWS infrastructure management, backup automation, Cloudflare email routing, and OCI billing synchronization.  
+Collection of utility scripts for AWS infrastructure management, backup automation, Cloudflare email routing, OCI billing synchronization, and Linux server setup and hardening.  
 **Version:** 4.0.11 | **Author:** Ivan Carlos | **License:** MIT
 
 ---
@@ -16,11 +16,13 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 ├── README-aws-lambda.md                     # AWS Lambda functions & IAM policies
 ├── README-backup-scripts.md                 # Linux backup & monitoring scripts
 ├── README-cloudflare-worker.md              # Cloudflare Workers for email routing
+├── README-linux-scripts.md                  # Linux server setup & hardening scripts
 ├── README-oci-scripting.md                  # OCI billing sync script
 │
 ├── aws-lambda/                              # 7 Python Lambda functions + 8 IAM policies
 ├── backup-scripts/                          # 4 shell scripts for DB/web backup
 ├── cloudflare-worker/                       # 2 JS workers for email routing
+├── linux-scripts/                           # 4 shell scripts for server setup & hardening
 └── oci-scripting/                           # 1 shell script for OCI billing sync
 ```
 
@@ -71,6 +73,27 @@ JavaScript Cloudflare Workers for **email routing** on domains using Cloudflare 
 | 2 | `worker-catch-all-and-administrative.js` | Forwards admin/security aliases; **catch-all** forwards everything else |
 
 📖 See **[README-cloudflare-worker.md](README-cloudflare-worker.md)** for deployment instructions, customization, and use cases.
+
+---
+
+### 🐧 [`linux-scripts/`](README-linux-scripts.md)
+
+Shell scripts for setting up and hardening Linux servers (Debian/Ubuntu).
+
+| # | Script | Purpose |
+|---|--------|---------|
+| 1 | `server-prep.sh` | Refreshes packages, upgrades the system, and installs a baseline toolset (`curl`, `wget`, `sudo`, `cron`, `nano`, `fail2ban`) |
+| 2 | `redis-setup.sh` | Applies Redis-recommended kernel settings (`vm.overcommit_memory`, `net.ipv4.ip_nonlocal_bind`) |
+| 3 | `disable-services.sh` | Disables and stops unused services (outdated PHP-FPM, memcached, postfix, proftpd, ufw, varnish) |
+| 4 | `cloudpanel-fix.sh` | Hardens nginx on CloudPanel and wires Fail2Ban into Cloudflare's firewall |
+
+Scripts can be run remotely with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/<script>.sh | sudo bash
+```
+
+📖 See **[README-linux-scripts.md](README-linux-scripts.md)** for per-script details, requirements, and remote execution instructions.
 
 ---
 
