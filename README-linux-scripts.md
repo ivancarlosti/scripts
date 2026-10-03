@@ -1,6 +1,6 @@
 # Linux Scripts
 
-Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, and nginx/Fail2Ban hardening. Every script is idempotent and safe to re-run.
+Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, and Fail2Ban setup (with optional Cloudflare integration). Every script is idempotent and safe to re-run.
 
 ---
 
@@ -91,15 +91,15 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 ---
 
 ### [`cloudpanel-fix.sh`](linux-scripts/cloudpanel-fix.sh)
-**Purpose:** Hardens nginx on CloudPanel and integrates Fail2Ban with Cloudflare's firewall.
+**Purpose:** Hardens nginx on CloudPanel.
 
 **Workflow:**
 1. Detects the installed nginx version and optional modules (HTTP/3, `http2` directive, modern SSL, brotli).
-2. Installs `/usr/local/bin/cf-fail2ban.sh`, which bans/unbans IPs through the Cloudflare Firewall Access Rules API.
-3. Wires the Cloudflare action into the Fail2Ban `ui-custom-action.conf` jail.
-4. Rewrites `nginx.conf`, `global_settings`, `brotli.conf`, `ssl_ktls.conf` and the custom-domain vhost using only the directives the installed nginx build accepts.
-5. Generates `cloudflare_realip.conf` from the Cloudflare IP ranges and adds a cron job to refresh it.
-6. Tests and reloads Fail2Ban and nginx.
+2. Rewrites `nginx.conf`, `global_settings`, `security_headers`, `brotli.conf`, `ssl_ktls.conf`, `default.conf` and the custom-domain vhost using only the directives the installed nginx build accepts.
+3. Generates `cloudflare_realip.conf` from the Cloudflare IP ranges and adds a cron job to refresh it.
+4. Tests and reloads nginx.
+
+> The Fail2Ban / Cloudflare ban integration now lives in its own script — see [`fail2ban-setup.sh`](#fail2ban-setupsh).
 
 **Diagnostics:** every step is printed as `==> [step NN] …`, and if any command fails the script prints the failing line, the command and the exit code instead of stopping silently:
 
@@ -114,7 +114,51 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
 | `CLEAR_SCREEN=1` | Restores the old behaviour of clearing the terminal before the final reload |
 
-**⚠️ Before running:** set the `CF_ACCOUNT` and `CF_TOKEN` values inside the script (Cloudflare account ID and an Account Firewall Access Rules token).
+---
+
+### [`fail2ban-setup.sh`](linux-scripts/fail2ban-setup.sh)
+**Purpose:** Configures Fail2Ban and, optionally, extends banning to the Cloudflare firewall.
+
+It runs **standalone** (separate from `cloudpanel-fix.sh`) and picks its mode from the
+command line:
+
+| Mode | When | What it does |
+|------|------|--------------|
+| **Cloudflare** | `--cf-token`, or `--cf-email` + `--cf-key`, are provided | Installs `/usr/local/bin/cf-fail2ban.sh` (mode `700`) and wires it into the Fail2Ban `ui-custom-action.conf` action so bans/unbans are also pushed to the Cloudflare Firewall Access Rules API |
+| **Local only** | No credentials provided | Removes any leftover Cloudflare helper/wiring and writes an additive `jail.d` override that bans via the server's own action (`nftables-multiport`, else `iptables-multiport`) — **no Cloudflare API calls at all** |
+
+Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
+
+**Options** (values may also come from the matching environment variable):
+
+| Option | Environment | Purpose |
+|--------|-------------|---------|
+| `--cf-account <id>` | `CF_ACCOUNT` | Cloudflare Account ID (required with credentials) |
+| `--cf-token <token>` | `CF_TOKEN` | Cloudflare API Token with the Account *Firewall Access Rules: Edit* permission |
+| `--cf-email <email>` | `CF_EMAIL` | Cloudflare account email (legacy Global API Key auth) |
+| `--cf-key <key>` | `CF_KEY` | Cloudflare Global API Key (legacy auth; requires `--cf-email`) |
+| `--cf-target <ip\|hostname>` | `CF_TARGET` | Rule target type (default: `ip`) |
+| `-h`, `--help` | — | Show usage and exit |
+
+```bash
+# With Cloudflare (recommended: a scoped Account Firewall Access Rules API token)
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --cf-account <ACCOUNT_ID> --cf-token <API_TOKEN>
+
+# Without Cloudflare: local banning only
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh | sudo bash
+
+# Full per-command trace
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo VERBOSE=1 bash -s -- --cf-account <ACCOUNT_ID> --cf-token <API_TOKEN>
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
+| `CLEAR_SCREEN=1` | Clears the terminal at the end |
+
+> **Note:** in local mode the jail override is written to `/etc/fail2ban/jail.d/`, which is additive — CloudPanel values in `/etc/fail2ban/jail.local` still take precedence. The Cloudflare helper is stored `700` (root-only) because it contains the credential.
 
 ---
 
@@ -125,8 +169,9 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | Debian / Ubuntu server | Target operating system (scripts use `apt`) |
 | `systemd` | Required by `disable-services.sh` |
 | `nginx` | Required by `cloudpanel-fix.sh` |
-| [Fail2Ban](https://www.fail2ban.org/) | Required by `cloudpanel-fix.sh` |
-| `jq` | Required by `cloudpanel-fix.sh` to parse Cloudflare API responses |
+| [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh` |
+| `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) |
+| `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses |
 
 ---
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloudflare Fail2Ban + nginx hardening
+# nginx hardening for CloudPanel
 # Branches config on the installed nginx build so outdated packages do not
 # receive directives they reject (quic, http3, http2 on, ssl_reject_handshake,
 # ssl_conf_command, brotli).
@@ -83,7 +83,7 @@ step "Preflight: environment and expected files"
 info "running as      : $(id -un) (uid $(id -u))"
 info "nginx version   : ${NGINX_VER:-unknown}"
 info "nginx features  : http3=${NGINX_HTTP3} http2_directive=${NGINX_HTTP2_DIRECTIVE} modern_ssl=${NGINX_MODERN_SSL} brotli=${NGINX_BROTLI}"
-for tool in sudo nginx fail2ban-client jq sed awk sort grep; do
+for tool in sudo nginx sed awk sort grep; do
     if command -v "$tool" > /dev/null 2>&1; then
         info "tool present    : $tool"
     else
@@ -91,8 +91,7 @@ for tool in sudo nginx fail2ban-client jq sed awk sort grep; do
     fi
 done
 for path in /etc/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled \
-            /etc/nginx/cloudflare/ips /etc/nginx/ssl/dhparams.pem \
-            /etc/fail2ban/action.d/ui-custom-action.conf; do
+            /etc/nginx/cloudflare/ips /etc/nginx/ssl/dhparams.pem; do
     if sudo test -e "$path"; then
         info "path present    : $path"
     else
@@ -100,42 +99,6 @@ for path in /etc/nginx /etc/nginx/conf.d /etc/nginx/sites-enabled \
     fi
 done
 
-step "Installing /usr/local/bin/cf-fail2ban.sh (Cloudflare ban/unban helper)"
-########## Write /usr/local/bin/cf-fail2ban.sh file to enable CloudFlare ban/unban calls ##########
-sudo tee /usr/local/bin/cf-fail2ban.sh > /dev/null << 'EOF'
-#!/bin/bash
-ACTION="$1"
-NAME="$2"
-IP="$3"
-CF_ACCOUNT="<<cf account id>>"
-CF_TOKEN="<<cf Account.Account Firewall Access Rules token>>"
-CF_TARGET="ip"
-API_URL="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/firewall/access_rules/rules"
-if [ "$ACTION" = "ban" ]; then
-    curl -s -o /dev/null -X POST "$API_URL" \
-         -H "Authorization: Bearer $CF_TOKEN" \
-         -H "Content-Type: application/json" \
-         -d "{\"mode\":\"block\",\"configuration\":{\"target\":\"$CF_TARGET\",\"value\":\"$IP\"},\"notes\":\"Fail2Ban $NAME\"}"
-elif [ "$ACTION" = "unban" ]; then
-    RULE_ID=$(curl -s -X GET "$API_URL?mode=block&configuration.target=$CF_TARGET&configuration.value=$IP&page=1&per_page=1" \
-              -H "Authorization: Bearer $CF_TOKEN" \
-              -H "Content-Type: application/json" \
-              | jq -r '.result[0].id // empty')
-    if [ -n "$RULE_ID" ]; then
-        curl -s -o /dev/null -X DELETE "$API_URL/$RULE_ID" \
-             -H "Authorization: Bearer $CF_TOKEN" \
-             -H "Content-Type: application/json"
-    fi
-fi
-EOF
-########## Make /usr/local/bin/cf-fail2ban.sh executable ##########
-sudo chmod +x /usr/local/bin/cf-fail2ban.sh
-step "Wiring the Cloudflare action into Fail2Ban (ui-custom-action.conf)"
-########## Update /etc/fail2ban/action.d/ui-custom-action.conf to trigger CF script by Fail2Ban ##########
-sudo grep -q "cf-fail2ban.sh ban" /etc/fail2ban/action.d/ui-custom-action.conf || \
-sudo sed -i 's|^actionban = |actionban = /usr/local/bin/cf-fail2ban.sh ban "<name>" "<ip>"\n            |' /etc/fail2ban/action.d/ui-custom-action.conf
-sudo grep -q "cf-fail2ban.sh unban" /etc/fail2ban/action.d/ui-custom-action.conf || \
-sudo sed -i 's|^actionunban = |actionunban = /usr/local/bin/cf-fail2ban.sh unban "<name>" "<ip>"\n              |' /etc/fail2ban/action.d/ui-custom-action.conf
 step "Installing the cron job that refreshes cloudflare_realip.conf daily"
 ########## Add crontab to read cloudflare/ips and write conf.d/cloudflare_realip.conf for nginx ##########
 # The "|| true" keeps "set -e" from aborting when root has no crontab yet (crontab -l
@@ -578,7 +541,7 @@ server {
 EOF
 fi
 if [ "$CLEAR_SCREEN" = "1" ]; then clear || true; fi
-########## Execute crontab line, test and restart fail2ban & nginx ##########
+########## Execute crontab line, test and restart nginx ##########
 step "Regenerating /etc/nginx/conf.d/cloudflare_realip.conf"
 if sudo test -f /etc/nginx/cloudflare/ips; then
     sudo sed -e 's/allow/set_real_ip_from/' -e '/deny all;/d' /etc/nginx/cloudflare/ips | sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null
@@ -588,13 +551,6 @@ else
     sudo tee /etc/nginx/conf.d/cloudflare_realip.conf > /dev/null << 'EOF'
 # /etc/nginx/cloudflare/ips was not found when cloudpanel-fix.sh ran
 EOF
-fi
-step "Validating and reloading Fail2Ban"
-if command -v fail2ban-client > /dev/null 2>&1; then
-    sudo fail2ban-client -t && sudo fail2ban-client reload
-    info "fail2ban reloaded"
-else
-    warn "fail2ban-client not installed; skipping Fail2Ban validation/reload"
 fi
 step "Validating and reloading nginx"
 sudo nginx -t && sudo systemctl reload nginx
