@@ -25,7 +25,10 @@
 #      certificate cron acts on it;
 #   5. create a temporary self-signed placeholder when the certificate files are
 #      missing, so nginx can load the vhost while the ACME HTTP-01 challenge is
-#      served from /var/www/clp-acme;
+#      served from /var/www/clp-acme, and verify that the vhost really is part of
+#      the configuration nginx loaded (CloudPanel's panel listener on port 8443 is
+#      a catch-all, so https://<domain>:8443 answers for any hostname even when
+#      this vhost - the panel's port-80/443 entry point - is missing or unused);
 #   6. obtain the certificate with CloudPanel itself, probing clpctl and using
 #      the first command the installed CLI actually provides (see below); only
 #      when CloudPanel cannot issue it is certbot installed and used;
@@ -276,6 +279,26 @@ fi
 nginx -t
 systemctl reload nginx
 
+# --- Vhost verification -------------------------------------------------------
+# Two listeners are involved and only one of them needs this vhost: CloudPanel
+# serves the admin panel itself from its own instance on port 8443, which is a
+# catch-all ("server_name _;"), so https://<domain>:8443 answers for any hostname
+# even when no vhost exists. The file written above is the panel's port-80/443
+# entry point and only does anything when the nginx that owns those ports really
+# includes it (/etc/nginx/nginx.conf -> sites-enabled/*.conf): otherwise the
+# request lands on the default server and the TLS handshake is rejected
+# ("unrecognized name"). Report which of the two is the case instead of leaving
+# it to guesswork.
+VHOST_ACTIVE="no"
+if nginx -T 2>/dev/null | grep -qE "^[[:space:]]*server_name[[:space:]]+[^;]*${DOMAIN}([[:space:];])"; then
+  VHOST_ACTIVE="yes"
+  echo "custom-domain vhost loaded by nginx: ${VHOST}"
+else
+  echo "warning: ${VHOST} is not part of the configuration nginx loaded" >&2
+  echo "         check that /etc/nginx/nginx.conf includes sites-enabled/*.conf;" >&2
+  echo "         https://${DOMAIN}:8443 keeps working, https://${DOMAIN} does not." >&2
+fi
+
 # --- Certificate issuance ----------------------------------------------------
 # CloudPanel has no stable CLI command for the admin panel's own certificate, so
 # probe the installed CLI and use the first supported command; certbot is the
@@ -370,4 +393,8 @@ fi
 # (see "Certificate issuance" above) and the domain is registered in its config
 # table, so Settings -> General -> "Domain Name" and CloudPanel's own renewal
 # cron see it too.
-echo "Panel URL: https://${DOMAIN}"
+if [[ "$VHOST_ACTIVE" == "yes" ]]; then
+  echo "Panel URL: https://${DOMAIN}"
+else
+  echo "Panel URL: https://${DOMAIN}:8443 (the vhost that serves port 443 is not loaded - see the warning above)" >&2
+fi
