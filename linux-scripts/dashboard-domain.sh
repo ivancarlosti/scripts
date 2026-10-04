@@ -17,18 +17,34 @@
 #   1. normalise + validate the domain;
 #   2. back up the CloudPanel SQLite database (/root/db.sq3.<timestamp>.bak);
 #   3. rewrite (or create) the custom-domain nginx vhost and its ACME location
-#      (an empty "server_name ;" already present is simply filled in);
+#      (an empty "server_name ;" already present is simply filled in; a missing
+#      vhost is written as a CloudPanel-style reverse proxy to
+#      https://127.0.0.1:8443);
 #   4. create a temporary self-signed placeholder when the certificate files are
-#      missing (so nginx can load the vhost), obtain the certificate with certbot
-#      (webroot) and install it as
-#      /etc/nginx/ssl-certificates/custom-domain.{crt,key};
-#   5. repoint the vhost at the certificate and reload nginx;
-#   6. rewrite every "old domain" value in the CloudPanel database (the site
-#      table is intentionally left untouched);
-#   7. renew the CloudPanel custom-domain certificate via clpctl.
+#      missing, so nginx can load the vhost while the ACME HTTP-01 challenge is
+#      served from /var/www/clp-acme;
+#   5. obtain the certificate with CloudPanel itself, probing clpctl and using
+#      the first command the installed CLI actually provides (see below); only
+#      when CloudPanel cannot issue it is certbot installed and used;
+#   6. install the certificate as
+#      /etc/nginx/ssl-certificates/custom-domain.{crt,key} and reload nginx;
+#   7. rewrite every "old domain" value in the CloudPanel database (the site
+#      table is intentionally left untouched).
 #
-# Requirements: root, an existing CloudPanel install (nginx + clpctl + sqlite3)
-# and a DNS A/AAAA record that already resolves <domain> to this server.
+# Certificate issuance: CloudPanel does not expose the admin panel's own
+# custom-domain certificate through a stable CLI command, so the script probes
+# `clpctl list` (as the clp user, exactly like CloudPanel's own cron entries) and
+# uses the first of
+#   lets-encrypt:install:custom-domain:certificate  (undocumented, if present)
+#   lets-encrypt:renew:custom-domain:certificate    (CloudPanel's own cron job)
+#   lets-encrypt:install:certificate                (documented; needs a site)
+# that the installed CLI provides, and only trusts it when a real Let's Encrypt
+# certificate for <domain> actually landed on disk. certbot (--webroot; it
+# writes to /etc/letsencrypt, which CloudPanel's renewal cron never touches) is
+# used only when none of those commands works.
+#
+# Requirements: root, an existing CloudPanel install (nginx + clpctl) and a DNS
+# A/AAAA record that already resolves <domain> to this server.
 set -euo pipefail
 
 DB="/home/clp/htdocs/app/data/db.sq3"
@@ -44,8 +60,9 @@ Usage:
   dashboard-domain.sh <domain>
   curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/dashboard-domain.sh | sudo bash -s -- cp.example.com
 
-The script rewrites the panel vhost, issues a Let's Encrypt certificate for
-<domain> and updates the domain stored in the CloudPanel database.
+The script rewrites the panel vhost, has CloudPanel issue a Let's Encrypt
+certificate for <domain> (falling back to certbot when its own clpctl cannot)
+and updates the domain stored in the CloudPanel database.
 EOF
 }
 
@@ -87,10 +104,12 @@ if [[ -f "$VHOST" ]]; then
     OLD_DOMAIN="$(grep -m1 -E '^[[:space:]]*server_name[[:space:]]+' "$VHOST" \
       | sed -E 's/^[[:space:]]*server_name[[:space:]]+//; s/[[:space:]]*;.*//')"
     sed -E -i "s/^([[:space:]]*server_name[[:space:]]+).*/\1${DOMAIN};/" "$VHOST"
-    if [[ -n "$OLD_DOMAIN" ]]; then
-      echo "server_name changed: ${OLD_DOMAIN} -> ${DOMAIN}"
-    else
+    if [[ -z "$OLD_DOMAIN" ]]; then
       echo "empty server_name set to: ${DOMAIN}"
+    elif [[ "$OLD_DOMAIN" == "$DOMAIN" ]]; then
+      echo "server_name already set to: ${DOMAIN}"
+    else
+      echo "server_name changed: ${OLD_DOMAIN} -> ${DOMAIN}"
     fi
   else
     echo "No server_name in $VHOST" >&2
@@ -108,6 +127,36 @@ server {
   }
   location / {
     return 301 https://\$host\$request_uri;
+  }
+}
+
+# Reverse proxy to the panel, mirroring CloudPanel's own custom-domain vhost.
+# Only the plain "listen 443 ssl" form is used so this file stays valid on every
+# nginx version CloudPanel supports (no http2/http3 directive guessing).
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  ssl_certificate_key ${SSL_DIR}/custom-domain.key;
+  ssl_certificate ${SSL_DIR}/custom-domain.crt;
+  server_name ${DOMAIN};
+  client_max_body_size 5048M;
+  root /home/clp/htdocs/app/files/public;
+  error_log /home/clp/logs/nginx/error.log;
+  add_header Cache-Control no-transform;
+  location / {
+    proxy_set_header Host \$http_host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$remote_addr;
+    proxy_set_header X-Forwarded-Host \$http_host;
+    proxy_pass https://127.0.0.1:8443/;
+    proxy_max_temp_file_size 0;
+    proxy_connect_timeout 7200;
+    proxy_send_timeout 7200;
+    proxy_read_timeout 7200;
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
+    proxy_temp_file_write_size 256k;
   }
 }
 EOF
@@ -133,11 +182,11 @@ server {
 EOF
 fi
 
-# Install the helper tools before nginx is (re)loaded: certbot issues the
-# certificate, sqlite3 rewrites the panel domain below and openssl creates the
-# temporary placeholder certificate just underneath.
+# Install the helper tools before nginx is (re)loaded: sqlite3 rewrites the panel
+# domain below and openssl creates the temporary placeholder certificate just
+# underneath. certbot is deliberately not installed here — it is only pulled in
+# when CloudPanel's own clpctl cannot issue the certificate (see below).
 missing=()
-command -v certbot >/dev/null 2>&1 || missing+=(certbot)
 command -v sqlite3 >/dev/null 2>&1 || missing+=(sqlite3)
 command -v openssl >/dev/null 2>&1 || missing+=(openssl)
 if (( ${#missing[@]} > 0 )); then
@@ -148,8 +197,8 @@ fi
 # The custom-domain vhost points at custom-domain.{crt,key}; when those files do
 # not exist yet nginx refuses to load ("BIO_new_file() failed ... No such file
 # or directory") and never serves the ACME challenge. Generate a short-lived
-# self-signed placeholder so nginx can start; certbot below then overwrites it
-# with the real Let's Encrypt certificate.
+# self-signed placeholder so nginx can start; the certificate installed below
+# then overwrites it.
 if [[ ! -s "${SSL_DIR}/custom-domain.crt" || ! -s "${SSL_DIR}/custom-domain.key" ]]; then
   openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
     -keyout "${SSL_DIR}/custom-domain.key" \
@@ -163,19 +212,90 @@ fi
 nginx -t
 systemctl reload nginx
 
-# Request (or reuse) the Let's Encrypt certificate with the webroot plugin.
-certbot certonly --webroot -w "$WEBROOT" -d "$DOMAIN" \
-  --agree-tos --register-unsafely-without-email --non-interactive
-install -m 600 "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" "${SSL_DIR}/custom-domain.key"
-install -m 644 "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" "${SSL_DIR}/custom-domain.crt"
+# --- Certificate issuance ----------------------------------------------------
+# CloudPanel has no stable CLI command for the admin panel's own certificate, so
+# probe the installed CLI and use the first supported command; certbot is the
+# last resort. cert_ok() makes re-runs idempotent and stops a command that exits
+# 0 without actually replacing the placeholder from being treated as a success.
+cert_ok() {
+  local crt="${SSL_DIR}/custom-domain.crt"
+  [[ -s "$crt" ]] || return 1
+  openssl x509 -in "$crt" -noout -issuer 2>/dev/null | grep -qi "Let's Encrypt" || return 1
+  openssl x509 -in "$crt" -noout -text 2>/dev/null | grep -qE "DNS:${DOMAIN}(,|;|\$)"
+}
 
-sed -E -i \
-  -e "s#^[[:space:]]*ssl_certificate_key[[:space:]]+.*;#  ssl_certificate_key ${SSL_DIR}/custom-domain.key;#" \
-  -e "s#^[[:space:]]*ssl_certificate[[:space:]]+.*;#  ssl_certificate ${SSL_DIR}/custom-domain.crt;#" \
-  "$VHOST"
+CLPCTL="$(command -v clpctl 2>/dev/null || true)"
+if [[ -z "$CLPCTL" && -x /usr/bin/clpctl ]]; then
+  CLPCTL="/usr/bin/clpctl"
+fi
 
-nginx -t
-systemctl reload nginx
+# clpctl is always run as the clp user, exactly like CloudPanel's cron entries.
+clpctl_run() {
+  [[ -n "$CLPCTL" ]] || return 1
+  su -s /bin/bash -c "$(printf '%q ' "$CLPCTL" "$@")" clp
+}
+
+CLPCTL_LIST=""
+clpctl_has() {
+  [[ -n "$CLPCTL" ]] || return 1
+  if [[ -z "$CLPCTL_LIST" ]]; then
+    CLPCTL_LIST="$(clpctl_run list --raw 2>/dev/null || true)"
+    [[ -n "$CLPCTL_LIST" ]] || CLPCTL_LIST="$(clpctl_run list 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$CLPCTL_LIST" | awk '{print $1}' | grep -qxF "$1"
+}
+
+ISSUED=""
+if cert_ok; then
+  echo "a Let's Encrypt certificate for ${DOMAIN} is already installed; keeping it"
+  ISSUED="existing certificate"
+elif clpctl_has 'lets-encrypt:install:custom-domain:certificate'; then
+  echo "issuing the certificate with CloudPanel (clpctl lets-encrypt:install:custom-domain:certificate)"
+  if clpctl_run lets-encrypt:install:custom-domain:certificate --domainName="$DOMAIN"; then
+    ISSUED="clpctl lets-encrypt:install:custom-domain:certificate"
+  fi
+elif clpctl_has 'lets-encrypt:renew:custom-domain:certificate'; then
+  echo "issuing the certificate with CloudPanel (clpctl lets-encrypt:renew:custom-domain:certificate)"
+  if clpctl_run lets-encrypt:renew:custom-domain:certificate; then
+    ISSUED="clpctl lets-encrypt:renew:custom-domain:certificate"
+  fi
+elif clpctl_has 'lets-encrypt:install:certificate' && [[ -f "/etc/nginx/sites-enabled/${DOMAIN}.conf" ]]; then
+  echo "issuing the certificate with CloudPanel (clpctl lets-encrypt:install:certificate)"
+  if clpctl_run lets-encrypt:install:certificate --domainName="$DOMAIN"; then
+    ISSUED="clpctl lets-encrypt:install:certificate"
+  fi
+fi
+
+# The renew namespace was dropped in CloudPanel CLI 6.0.8, so a command may exist
+# in the probe yet do nothing; only trust it once a real certificate is on disk.
+if [[ -n "$ISSUED" && "$ISSUED" != "existing certificate" ]] && ! cert_ok; then
+  echo "CloudPanel did not install a usable Let's Encrypt certificate for ${DOMAIN}" >&2
+  ISSUED=""
+fi
+
+if [[ -n "$ISSUED" ]]; then
+  echo "certificate ready (${ISSUED})"
+  nginx -t
+  systemctl reload nginx
+else
+  # Fallback: issue with certbot's webroot plugin. It writes to /etc/letsencrypt,
+  # which CloudPanel's renewal cron never touches, so the two cannot fight over
+  # the certificate files.
+  echo "falling back to certbot for the certificate" >&2
+  command -v certbot >/dev/null 2>&1 || { apt-get update; apt-get install -y certbot; }
+  certbot certonly --webroot -w "$WEBROOT" -d "$DOMAIN" \
+    --agree-tos --register-unsafely-without-email --non-interactive
+  install -m 600 "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" "${SSL_DIR}/custom-domain.key"
+  install -m 644 "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" "${SSL_DIR}/custom-domain.crt"
+
+  sed -E -i \
+    -e "s#^[[:space:]]*ssl_certificate_key[[:space:]]+.*;#  ssl_certificate_key ${SSL_DIR}/custom-domain.key;#" \
+    -e "s#^[[:space:]]*ssl_certificate[[:space:]]+.*;#  ssl_certificate ${SSL_DIR}/custom-domain.crt;#" \
+    "$VHOST"
+
+  nginx -t
+  systemctl reload nginx
+fi
 
 # Rewrite the stored panel domain. The query walks every table/column except the
 # "site" table and replaces values exactly equal to the previous domain; the
@@ -199,6 +319,6 @@ else
   echo "No previous domain to replace, so SQLite was not rewritten."
 fi
 
-# Let CloudPanel regenerate its own custom-domain certificate metadata.
-su -s /bin/bash -c '/usr/bin/clpctl lets-encrypt:renew:custom-domain:certificate' clp || true
+# CloudPanel's own clpctl was already given the chance to issue the certificate
+# (see "Certificate issuance" above), so there is nothing left to sync here.
 echo "Panel URL: https://${DOMAIN}"

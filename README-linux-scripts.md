@@ -163,16 +163,18 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 ---
 
 ### [`dashboard-domain.sh`](linux-scripts/dashboard-domain.sh)
-**Purpose:** Points the CloudPanel admin panel at a custom hostname (instead of the default `https://<server-ip>:8443`), issues a Let's Encrypt certificate for it and rewrites the domain stored in the CloudPanel database.
+**Purpose:** Points the CloudPanel admin panel at a custom hostname (instead of the default `https://<server-ip>:8443`), has CloudPanel issue a Let's Encrypt certificate for it (falling back to `certbot`) and rewrites the domain stored in the CloudPanel database.
 
 **Workflow:**
 1. Normalises the argument (lowercases it, strips a leading `http(s)://` and any trailing path) and validates it against a hostname pattern.
 2. Backs up the CloudPanel SQLite database to `/root/db.sq3.<timestamp>.bak` and creates the ACME webroot and SSL certificate directories.
-3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists (filling in an empty `server_name ;` already declared by CloudPanel), otherwise writes a fresh ACME-capable HTTP vhost; ensures a `/.well-known/acme-challenge/` location is present.
-4. Installs `certbot` / `sqlite3` / `openssl` if missing, generates a temporary self-signed certificate when the vhost's certificate files are absent (otherwise nginx refuses to load), then tests and reloads nginx and requests the certificate with the webroot plugin.
-5. Installs the certificate as `/etc/nginx/ssl-certificates/custom-domain.crt` / `.key`, points the vhost at them and reloads nginx again.
-6. Rewrites every value exactly equal to the **old** domain inside the CloudPanel database (the `site` table is intentionally excluded).
-7. Renews the CloudPanel custom-domain certificate (`clpctl lets-encrypt:renew:custom-domain:certificate`) and prints the new panel URL.
+3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists (filling in an empty `server_name ;` already declared by CloudPanel), otherwise writes a fresh vhost that serves the ACME challenge on port 80 and reverse-proxies the domain to the panel on `https://127.0.0.1:8443`; ensures the `/.well-known/acme-challenge/` location is present.
+4. Installs `sqlite3` / `openssl` if missing, generates a temporary self-signed certificate when the vhost's certificate files are absent (otherwise nginx refuses to load), then tests and reloads nginx.
+5. Issues the certificate with **CloudPanel itself**: it probes `clpctl list` (as the `clp` user, exactly like CloudPanel's cron entries) and uses the first command the installed CLI provides — `lets-encrypt:install:custom-domain:certificate`, `lets-encrypt:renew:custom-domain:certificate` (CloudPanel's own cron job) or `lets-encrypt:install:certificate` (needs a site for the domain) — and only trusts it once a real Let's Encrypt certificate for the domain is on disk.
+6. Installs the certificate as `/etc/nginx/ssl-certificates/custom-domain.crt` / `.key`, points the vhost at them and reloads nginx. When CloudPanel's own commands are unavailable or do nothing, `certbot` is installed and used with the `--webroot` plugin instead. Re-runs that find a valid certificate already in place are skipped.
+7. Rewrites every value exactly equal to the **old** domain inside the CloudPanel database (the `site` table is intentionally excluded) and prints the new panel URL.
+
+> **Why the probe?** CloudPanel exposes no stable CLI command for the admin panel's *own* certificate: the `renew` namespace was removed in CLI 6.0.8 and the "CloudPanel Custom Domain" UI setting is a [known-flaky](https://github.com/cloudpanel-io/cloudpanel-ce/issues/301) path. `certbot` writes to `/etc/letsencrypt`, which CloudPanel's renewal cron never touches, so the two cannot fight over the certificate files.
 
 **Usage:**
 
@@ -183,7 +185,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 > The domain argument is required when the script runs non-interactively (piped through `curl`); when run from a terminal without it, the domain is prompted for. Pass `-h` / `--help` to print usage.
 
-> **Requirements:** root, an existing CloudPanel install (nginx, `clpctl`, the CloudPanel SQLite database) and a DNS `A`/`AAAA` record that **already** resolves the domain to the server (HTTP-01 validation). `certbot`, `sqlite3` and `openssl` are installed automatically when missing. When the vhost's certificate files do not exist yet, a temporary self-signed certificate is generated so nginx can load and answer the ACME challenge (certbot replaces it). The database is backed up before any change so you can roll back.
+> **Requirements:** root, an existing CloudPanel install (nginx, `clpctl`, the CloudPanel SQLite database) and a DNS `A`/`AAAA` record that **already** resolves the domain to the server (HTTP-01 validation, so port 80 must be reachable). `sqlite3` and `openssl` are installed automatically when missing; `certbot` is only installed when CloudPanel's own `clpctl` cannot issue the certificate. When the vhost's certificate files do not exist yet, a temporary self-signed certificate is generated so nginx can load and answer the ACME challenge. The database is backed up before any change so you can roll back.
 
 ---
 
@@ -197,8 +199,9 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh` |
 | `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) |
 | `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses |
-| `CloudPanel` + `clpctl` | Required by `dashboard-domain.sh` to change the admin panel domain |
-| `certbot`, `sqlite3` | Used by `dashboard-domain.sh`; installed automatically if missing |
+| `CloudPanel` + `clpctl` | Required by `dashboard-domain.sh` to change the admin panel domain (it also issues the certificate when its CLI supports it) |
+| `sqlite3`, `openssl` | Used by `dashboard-domain.sh`; installed automatically if missing |
+| `certbot` | Fallback certificate issuer for `dashboard-domain.sh`, installed only when CloudPanel's own `clpctl` cannot issue the certificate |
 
 ---
 
