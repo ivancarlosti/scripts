@@ -168,7 +168,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 **Workflow:**
 1. Normalises the argument (lowercases it, strips a leading `http(s)://` and any trailing path) and validates it against a hostname pattern.
 2. Backs up the CloudPanel SQLite database to `/root/db.sq3.<timestamp>.bak` and creates the ACME webroot and SSL certificate directories.
-3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists, otherwise writes a fresh ACME-capable HTTP vhost; ensures a `/.well-known/acme-challenge/` location is present.
+3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists (filling in an empty `server_name ;` already declared by CloudPanel), otherwise writes a fresh ACME-capable HTTP vhost; ensures a `/.well-known/acme-challenge/` location is present.
 4. Tests and reloads nginx, installs `certbot` / `sqlite3` if missing and requests the certificate with the webroot plugin.
 5. Installs the certificate as `/etc/nginx/ssl-certificates/custom-domain.crt` / `.key`, points the vhost at them and reloads nginx again.
 6. Rewrites every value exactly equal to the **old** domain inside the CloudPanel database (the `site` table is intentionally excluded).

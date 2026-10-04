@@ -16,7 +16,8 @@
 # Workflow:
 #   1. normalise + validate the domain;
 #   2. back up the CloudPanel SQLite database (/root/db.sq3.<timestamp>.bak);
-#   3. rewrite (or create) the custom-domain nginx vhost and its ACME location;
+#   3. rewrite (or create) the custom-domain nginx vhost and its ACME location
+#      (an empty "server_name ;" already present is simply filled in);
 #   4. obtain the certificate with certbot (webroot) and install it as
 #      /etc/nginx/ssl-certificates/custom-domain.{crt,key};
 #   5. repoint the vhost at the certificate and reload nginx;
@@ -77,11 +78,22 @@ install -d -m 755 "$WEBROOT" "$SSL_DIR"
 
 OLD_DOMAIN=""
 if [[ -f "$VHOST" ]]; then
-  OLD_DOMAIN="$(grep -m1 -E '^[[:space:]]*server_name[[:space:]]+' "$VHOST" \
-    | sed -E 's/^[[:space:]]*server_name[[:space:]]+//; s/[[:space:]]*;.*//')"
-  [[ -n "$OLD_DOMAIN" ]] || { echo "No server_name in $VHOST" >&2; exit 1; }
-  sed -E -i "s/^([[:space:]]*server_name[[:space:]]+).*/\1${DOMAIN};/" "$VHOST"
-  echo "server_name changed: ${OLD_DOMAIN} -> ${DOMAIN}"
+  # The custom-domain vhost may already declare server_name but leave it empty
+  # ("server_name ;") before a domain is configured — that is not an error, the
+  # script simply fills it in. A missing directive altogether is still an error.
+  if grep -qE '^[[:space:]]*server_name[[:space:]]+' "$VHOST"; then
+    OLD_DOMAIN="$(grep -m1 -E '^[[:space:]]*server_name[[:space:]]+' "$VHOST" \
+      | sed -E 's/^[[:space:]]*server_name[[:space:]]+//; s/[[:space:]]*;.*//')"
+    sed -E -i "s/^([[:space:]]*server_name[[:space:]]+).*/\1${DOMAIN};/" "$VHOST"
+    if [[ -n "$OLD_DOMAIN" ]]; then
+      echo "server_name changed: ${OLD_DOMAIN} -> ${DOMAIN}"
+    else
+      echo "empty server_name set to: ${DOMAIN}"
+    fi
+  else
+    echo "No server_name in $VHOST" >&2
+    exit 1
+  fi
 else
   cat > "$VHOST" <<EOF
 server {
@@ -163,7 +175,7 @@ if [[ -n "$OLD_DOMAIN" && "$OLD_DOMAIN" != "$DOMAIN" ]]; then
   done
   echo "SQLite values equal to ${OLD_DOMAIN} were changed to ${DOMAIN}, excluding the site table."
 else
-  echo "No previous server_name, so SQLite was not rewritten."
+  echo "No previous domain to replace, so SQLite was not rewritten."
 fi
 
 # Let CloudPanel regenerate its own custom-domain certificate metadata.
