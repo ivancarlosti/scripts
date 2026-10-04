@@ -20,15 +20,18 @@
 #      (an empty "server_name ;" already present is simply filled in; a missing
 #      vhost is written as a CloudPanel-style reverse proxy to
 #      https://127.0.0.1:8443);
-#   4. create a temporary self-signed placeholder when the certificate files are
+#   4. register the domain with CloudPanel itself (config key "custom_domain"),
+#      so Settings -> General -> "Domain Name" shows it and CloudPanel's own
+#      certificate cron acts on it;
+#   5. create a temporary self-signed placeholder when the certificate files are
 #      missing, so nginx can load the vhost while the ACME HTTP-01 challenge is
 #      served from /var/www/clp-acme;
-#   5. obtain the certificate with CloudPanel itself, probing clpctl and using
+#   6. obtain the certificate with CloudPanel itself, probing clpctl and using
 #      the first command the installed CLI actually provides (see below); only
 #      when CloudPanel cannot issue it is certbot installed and used;
-#   6. install the certificate as
+#   7. install the certificate as
 #      /etc/nginx/ssl-certificates/custom-domain.{crt,key} and reload nginx;
-#   7. rewrite every "old domain" value in the CloudPanel database (the site
+#   8. rewrite every "old domain" value in the CloudPanel database (the site
 #      table is intentionally left untouched).
 #
 # Certificate issuance: CloudPanel does not expose the admin panel's own
@@ -42,6 +45,11 @@
 # certificate for <domain> actually landed on disk. certbot (--webroot; it
 # writes to /etc/letsencrypt, which CloudPanel's renewal cron never touches) is
 # used only when none of those commands works.
+#
+# `lets-encrypt:renew:custom-domain:certificate` reads the "custom_domain" config
+# key and exits 0 without issuing anything while that key is empty (and also
+# while the certificate on disk is self-signed or valid for more than 7 more
+# days), which is why the domain is registered in step 4 before it is called.
 #
 # Requirements: root, an existing CloudPanel install (nginx + clpctl) and a DNS
 # A/AAAA record that already resolves <domain> to this server.
@@ -194,6 +202,62 @@ if (( ${#missing[@]} > 0 )); then
   apt-get install -y "${missing[@]}"
 fi
 
+# --- CloudPanel CLI helpers --------------------------------------------------
+# clpctl is always run as the clp user, exactly like CloudPanel's cron entries.
+CLPCTL="$(command -v clpctl 2>/dev/null || true)"
+if [[ -z "$CLPCTL" && -x /usr/bin/clpctl ]]; then
+  CLPCTL="/usr/bin/clpctl"
+fi
+
+clpctl_run() {
+  [[ -n "$CLPCTL" ]] || return 1
+  su -s /bin/bash -c "$(printf '%q ' "$CLPCTL" "$@")" clp
+}
+
+CLPCTL_LIST=""
+clpctl_has() {
+  [[ -n "$CLPCTL" ]] || return 1
+  if [[ -z "$CLPCTL_LIST" ]]; then
+    CLPCTL_LIST="$(clpctl_run list --raw 2>/dev/null || true)"
+    [[ -n "$CLPCTL_LIST" ]] || CLPCTL_LIST="$(clpctl_run list 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$CLPCTL_LIST" | awk '{print $1}' | grep -qxF "$1"
+}
+
+# --- Register the domain with CloudPanel -------------------------------------
+# A rewritten vhost alone leaves the panel unaware of the domain: CloudPanel
+# keeps it in its own config table (key "custom_domain") and reads it both for
+# Settings -> General -> "Domain Name" and for its daily
+# `lets-encrypt:renew:custom-domain:certificate` cron, which does nothing while
+# that key is empty. Register it before the certificate is requested so
+# CloudPanel's own path can take over from here on.
+#
+# `clpctl app:set:config-value` is the native way (it calls ConfigManager::set);
+# the SQLite write mirrors it for CLIs that do not expose the command yet and is
+# idempotent — CloudPanel's own installer seeds the table with
+# `INSERT INTO config (id, key, value) VALUES (NULL, ...)`.
+SQL_DOMAIN="$(printf '%s' "$DOMAIN" | sed "s/'/''/g")"
+CONFIG_SQL="
+INSERT INTO config (id, key, value)
+SELECT NULL, 'custom_domain', '${SQL_DOMAIN}'
+WHERE NOT EXISTS (SELECT 1 FROM config WHERE key = 'custom_domain');
+UPDATE config SET value = '${SQL_DOMAIN}' WHERE key = 'custom_domain';
+"
+
+if clpctl_has 'app:set:config-value' && clpctl_run app:set:config-value custom_domain "$DOMAIN"; then
+  echo "CloudPanel custom domain registered (clpctl app:set:config-value)"
+elif sqlite3 "$DB" "$CONFIG_SQL"; then
+  echo "CloudPanel custom domain registered (config.custom_domain)"
+else
+  echo "Could not register ${DOMAIN} with CloudPanel; set it in Settings -> General -> Domain Name" >&2
+fi
+
+# The SSH login banner (/etc/update-motd.d/10-cloudpanel) reads this file, so keep
+# it in sync exactly like the panel's own settings form does.
+printf '%s' "$DOMAIN" > /etc/.clp_custom_domain
+chown clp:clp /etc/.clp_custom_domain 2>/dev/null || true
+chmod 744 /etc/.clp_custom_domain
+
 # The custom-domain vhost points at custom-domain.{crt,key}; when those files do
 # not exist yet nginx refuses to load ("BIO_new_file() failed ... No such file
 # or directory") and never serves the ACME challenge. Generate a short-lived
@@ -215,34 +279,16 @@ systemctl reload nginx
 # --- Certificate issuance ----------------------------------------------------
 # CloudPanel has no stable CLI command for the admin panel's own certificate, so
 # probe the installed CLI and use the first supported command; certbot is the
-# last resort. cert_ok() makes re-runs idempotent and stops a command that exits
-# 0 without actually replacing the placeholder from being treated as a success.
+# last resort. The domain is registered above, so CloudPanel's own
+# `renew:custom-domain:certificate` can act on it — but that command also exits 0
+# without doing anything while the certificate on disk is the self-signed
+# placeholder, so its exit code is not trusted: cert_ok() checks the certificate
+# itself, which keeps re-runs idempotent too.
 cert_ok() {
   local crt="${SSL_DIR}/custom-domain.crt"
   [[ -s "$crt" ]] || return 1
   openssl x509 -in "$crt" -noout -issuer 2>/dev/null | grep -qi "Let's Encrypt" || return 1
   openssl x509 -in "$crt" -noout -text 2>/dev/null | grep -qE "DNS:${DOMAIN}(,|;|\$)"
-}
-
-CLPCTL="$(command -v clpctl 2>/dev/null || true)"
-if [[ -z "$CLPCTL" && -x /usr/bin/clpctl ]]; then
-  CLPCTL="/usr/bin/clpctl"
-fi
-
-# clpctl is always run as the clp user, exactly like CloudPanel's cron entries.
-clpctl_run() {
-  [[ -n "$CLPCTL" ]] || return 1
-  su -s /bin/bash -c "$(printf '%q ' "$CLPCTL" "$@")" clp
-}
-
-CLPCTL_LIST=""
-clpctl_has() {
-  [[ -n "$CLPCTL" ]] || return 1
-  if [[ -z "$CLPCTL_LIST" ]]; then
-    CLPCTL_LIST="$(clpctl_run list --raw 2>/dev/null || true)"
-    [[ -n "$CLPCTL_LIST" ]] || CLPCTL_LIST="$(clpctl_run list 2>/dev/null || true)"
-  fi
-  printf '%s\n' "$CLPCTL_LIST" | awk '{print $1}' | grep -qxF "$1"
 }
 
 ISSUED=""
@@ -297,10 +343,11 @@ else
   systemctl reload nginx
 fi
 
-# Rewrite the stored panel domain. The query walks every table/column except the
-# "site" table and replaces values exactly equal to the previous domain; the
-# identifier regex guards against odd table/column names before interpolating.
-SQL_DOMAIN="$(printf '%s' "$DOMAIN" | sed "s/'/''/g")"
+# Rewrite any leftover reference to the previous panel domain. The query walks
+# every table/column except the "site" table and replaces values exactly equal to
+# the previous domain; the identifier regex guards against odd table/column names
+# before interpolating. The domain itself is already registered above, so a run
+# with no previous domain needs nothing here.
 if [[ -n "$OLD_DOMAIN" && "$OLD_DOMAIN" != "$DOMAIN" ]]; then
   SQL_OLD="$(printf '%s' "$OLD_DOMAIN" | sed "s/'/''/g")"
   sqlite3 "$DB" "
@@ -320,5 +367,7 @@ else
 fi
 
 # CloudPanel's own clpctl was already given the chance to issue the certificate
-# (see "Certificate issuance" above), so there is nothing left to sync here.
+# (see "Certificate issuance" above) and the domain is registered in its config
+# table, so Settings -> General -> "Domain Name" and CloudPanel's own renewal
+# cron see it too.
 echo "Panel URL: https://${DOMAIN}"
