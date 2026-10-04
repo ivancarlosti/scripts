@@ -1,6 +1,6 @@
 # Linux Scripts
 
-Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, and Fail2Ban setup (with optional Cloudflare integration). Every script is idempotent and safe to re-run.
+Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, Fail2Ban setup (with optional Cloudflare integration), and pointing the CloudPanel admin panel at a custom domain. Every script is idempotent and safe to re-run.
 
 ---
 
@@ -162,6 +162,31 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
+### [`dashboard-domain.sh`](linux-scripts/dashboard-domain.sh)
+**Purpose:** Points the CloudPanel admin panel at a custom hostname (instead of the default `https://<server-ip>:8443`), issues a Let's Encrypt certificate for it and rewrites the domain stored in the CloudPanel database.
+
+**Workflow:**
+1. Normalises the argument (lowercases it, strips a leading `http(s)://` and any trailing path) and validates it against a hostname pattern.
+2. Backs up the CloudPanel SQLite database to `/root/db.sq3.<timestamp>.bak` and creates the ACME webroot and SSL certificate directories.
+3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists, otherwise writes a fresh ACME-capable HTTP vhost; ensures a `/.well-known/acme-challenge/` location is present.
+4. Tests and reloads nginx, installs `certbot` / `sqlite3` if missing and requests the certificate with the webroot plugin.
+5. Installs the certificate as `/etc/nginx/ssl-certificates/custom-domain.crt` / `.key`, points the vhost at them and reloads nginx again.
+6. Rewrites every value exactly equal to the **old** domain inside the CloudPanel database (the `site` table is intentionally excluded).
+7. Renews the CloudPanel custom-domain certificate (`clpctl lets-encrypt:renew:custom-domain:certificate`) and prints the new panel URL.
+
+**Usage:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/dashboard-domain.sh \
+  | sudo bash -s -- cp.example.com
+```
+
+> The domain argument is required when the script runs non-interactively (piped through `curl`); when run from a terminal without it, the domain is prompted for. Pass `-h` / `--help` to print usage.
+
+> **Requirements:** root, an existing CloudPanel install (nginx, `clpctl`, the CloudPanel SQLite database) and a DNS `A`/`AAAA` record that **already** resolves the domain to the server (HTTP-01 validation). `certbot` and `sqlite3` are installed automatically when missing. The database is backed up before any change so you can roll back.
+
+---
+
 ## 📦 Requirements
 
 | Dependency | Purpose |
@@ -172,6 +197,8 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh` |
 | `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) |
 | `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses |
+| `CloudPanel` + `clpctl` | Required by `dashboard-domain.sh` to change the admin panel domain |
+| `certbot`, `sqlite3` | Used by `dashboard-domain.sh`; installed automatically if missing |
 
 ---
 

@@ -22,7 +22,7 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 ├── aws-lambda/                              # 7 Python Lambda functions + 8 IAM policies
 ├── backup-scripts/                          # 4 shell scripts for DB/web backup
 ├── cloudflare-worker/                       # 2 JS workers for email routing
-├── linux-scripts/                           # 5 shell scripts for server setup & hardening
+├── linux-scripts/                           # 6 shell scripts for server setup & hardening
 └── oci-scripting/                           # 1 shell script for OCI billing sync
 ```
 
@@ -87,6 +87,7 @@ Shell scripts for setting up and hardening Linux servers (Debian/Ubuntu).
 | 3 | `disable-services.sh` | Disables and stops unused services (outdated PHP-FPM, memcached, postfix, proftpd, ufw, varnish) |
 | 4 | `cloudpanel-fix.sh` | Hardens nginx on CloudPanel |
 | 5 | `fail2ban-setup.sh` | Configures Fail2Ban — with optional Cloudflare firewall banning, or local-only when no credentials are passed |
+| 6 | `dashboard-domain.sh` | Points the CloudPanel admin panel at a custom domain and issues a Let's Encrypt certificate for it |
 
 Scripts can be run remotely with:
 
