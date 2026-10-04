@@ -18,7 +18,9 @@
 #   2. back up the CloudPanel SQLite database (/root/db.sq3.<timestamp>.bak);
 #   3. rewrite (or create) the custom-domain nginx vhost and its ACME location
 #      (an empty "server_name ;" already present is simply filled in);
-#   4. obtain the certificate with certbot (webroot) and install it as
+#   4. create a temporary self-signed placeholder when the certificate files are
+#      missing (so nginx can load the vhost), obtain the certificate with certbot
+#      (webroot) and install it as
 #      /etc/nginx/ssl-certificates/custom-domain.{crt,key};
 #   5. repoint the vhost at the certificate and reload nginx;
 #   6. rewrite every "old domain" value in the CloudPanel database (the site
@@ -131,16 +133,35 @@ server {
 EOF
 fi
 
-nginx -t
-systemctl reload nginx
-
+# Install the helper tools before nginx is (re)loaded: certbot issues the
+# certificate, sqlite3 rewrites the panel domain below and openssl creates the
+# temporary placeholder certificate just underneath.
 missing=()
 command -v certbot >/dev/null 2>&1 || missing+=(certbot)
 command -v sqlite3 >/dev/null 2>&1 || missing+=(sqlite3)
+command -v openssl >/dev/null 2>&1 || missing+=(openssl)
 if (( ${#missing[@]} > 0 )); then
   apt-get update
   apt-get install -y "${missing[@]}"
 fi
+
+# The custom-domain vhost points at custom-domain.{crt,key}; when those files do
+# not exist yet nginx refuses to load ("BIO_new_file() failed ... No such file
+# or directory") and never serves the ACME challenge. Generate a short-lived
+# self-signed placeholder so nginx can start; certbot below then overwrites it
+# with the real Let's Encrypt certificate.
+if [[ ! -s "${SSL_DIR}/custom-domain.crt" || ! -s "${SSL_DIR}/custom-domain.key" ]]; then
+  openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+    -keyout "${SSL_DIR}/custom-domain.key" \
+    -out "${SSL_DIR}/custom-domain.crt" \
+    -subj "/CN=${DOMAIN}" >/dev/null 2>&1
+  chmod 600 "${SSL_DIR}/custom-domain.key"
+  chmod 644 "${SSL_DIR}/custom-domain.crt"
+  echo "temporary self-signed certificate created (replaced by Let's Encrypt below)"
+fi
+
+nginx -t
+systemctl reload nginx
 
 # Request (or reuse) the Let's Encrypt certificate with the webroot plugin.
 certbot certonly --webroot -w "$WEBROOT" -d "$DOMAIN" \

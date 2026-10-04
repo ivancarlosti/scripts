@@ -169,7 +169,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 1. Normalises the argument (lowercases it, strips a leading `http(s)://` and any trailing path) and validates it against a hostname pattern.
 2. Backs up the CloudPanel SQLite database to `/root/db.sq3.<timestamp>.bak` and creates the ACME webroot and SSL certificate directories.
 3. Rewrites the `server_name` in `/etc/nginx/sites-enabled/custom-domain.conf` when that vhost exists (filling in an empty `server_name ;` already declared by CloudPanel), otherwise writes a fresh ACME-capable HTTP vhost; ensures a `/.well-known/acme-challenge/` location is present.
-4. Tests and reloads nginx, installs `certbot` / `sqlite3` if missing and requests the certificate with the webroot plugin.
+4. Installs `certbot` / `sqlite3` / `openssl` if missing, generates a temporary self-signed certificate when the vhost's certificate files are absent (otherwise nginx refuses to load), then tests and reloads nginx and requests the certificate with the webroot plugin.
 5. Installs the certificate as `/etc/nginx/ssl-certificates/custom-domain.crt` / `.key`, points the vhost at them and reloads nginx again.
 6. Rewrites every value exactly equal to the **old** domain inside the CloudPanel database (the `site` table is intentionally excluded).
 7. Renews the CloudPanel custom-domain certificate (`clpctl lets-encrypt:renew:custom-domain:certificate`) and prints the new panel URL.
@@ -183,7 +183,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 > The domain argument is required when the script runs non-interactively (piped through `curl`); when run from a terminal without it, the domain is prompted for. Pass `-h` / `--help` to print usage.
 
-> **Requirements:** root, an existing CloudPanel install (nginx, `clpctl`, the CloudPanel SQLite database) and a DNS `A`/`AAAA` record that **already** resolves the domain to the server (HTTP-01 validation). `certbot` and `sqlite3` are installed automatically when missing. The database is backed up before any change so you can roll back.
+> **Requirements:** root, an existing CloudPanel install (nginx, `clpctl`, the CloudPanel SQLite database) and a DNS `A`/`AAAA` record that **already** resolves the domain to the server (HTTP-01 validation). `certbot`, `sqlite3` and `openssl` are installed automatically when missing. When the vhost's certificate files do not exist yet, a temporary self-signed certificate is generated so nginx can load and answer the ACME challenge (certbot replaces it). The database is backed up before any change so you can roll back.
 
 ---
 
