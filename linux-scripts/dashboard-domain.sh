@@ -16,19 +16,21 @@
 # Workflow:
 #   1. normalise + validate the domain;
 #   2. back up the CloudPanel SQLite database (/root/db.sq3.<timestamp>.bak);
-#   3. rewrite (or create) the custom-domain nginx vhost and its ACME location
-#      (an empty "server_name ;" already present is simply filled in; a missing
-#      vhost is written as a CloudPanel-style reverse proxy to
-#      https://127.0.0.1:8443);
+#   3. (re)write the custom-domain nginx vhost from CloudPanel's own template: a
+#      443 listener - with QUIC/HTTP3 and HTTP/2 whenever the installed nginx
+#      build accepts those directives - that reverse-proxies the domain to
+#      https://127.0.0.1:8443. An existing vhost is backed up first and its
+#      server_name is reported (it becomes the "old domain" of step 8); a vhost
+#      without any server_name is refused instead of overwritten;
 #   4. register the domain with CloudPanel itself (config key "custom_domain"),
 #      so Settings -> General -> "Domain Name" shows it and CloudPanel's own
 #      certificate cron acts on it;
 #   5. create a temporary self-signed placeholder when the certificate files are
-#      missing, so nginx can load the vhost while the ACME HTTP-01 challenge is
-#      served from /var/www/clp-acme, and verify that the vhost really is part of
-#      the configuration nginx loaded (CloudPanel's panel listener on port 8443 is
-#      a catch-all, so https://<domain>:8443 answers for any hostname even when
-#      this vhost - the panel's port-80/443 entry point - is missing or unused);
+#      missing so nginx can load the vhost, load it, and verify that the vhost
+#      really is part of the configuration nginx loaded (CloudPanel's panel
+#      listener on port 8443 is a catch-all, so https://<domain>:8443 answers for
+#      any hostname even when this vhost - the panel's port-443 entry point - is
+#      missing or unused);
 #   6. obtain the certificate with CloudPanel itself, probing clpctl and using
 #      the first command the installed CLI actually provides (see below); only
 #      when CloudPanel cannot issue it is certbot installed and used;
@@ -45,9 +47,10 @@
 #   lets-encrypt:renew:custom-domain:certificate    (CloudPanel's own cron job)
 #   lets-encrypt:install:certificate                (documented; needs a site)
 # that the installed CLI provides, and only trusts it when a real Let's Encrypt
-# certificate for <domain> actually landed on disk. certbot (--webroot; it
-# writes to /etc/letsencrypt, which CloudPanel's renewal cron never touches) is
-# used only when none of those commands works.
+# certificate for <domain> actually landed on disk. certbot (--webroot into
+# CloudPanel's own challenge directory, /home/clp/htdocs/app/files/public; it
+# writes the certificate itself to /etc/letsencrypt, which CloudPanel's renewal
+# cron never touches) is used only when none of those commands works.
 #
 # `lets-encrypt:renew:custom-domain:certificate` reads the "custom_domain" config
 # key and exits 0 without issuing anything while that key is empty (and also
@@ -61,7 +64,10 @@ set -euo pipefail
 DB="/home/clp/htdocs/app/data/db.sq3"
 VHOST="/etc/nginx/sites-enabled/custom-domain.conf"
 SSL_DIR="/etc/nginx/ssl-certificates"
-WEBROOT="/var/www/clp-acme"
+# CloudPanel's own challenge directory for the panel's custom domain: the panel
+# listener on port 8443 serves "/.well-known" from this root with auth_basic off,
+# which is the directory CloudPanel itself writes the HTTP-01 token into.
+WEBROOT="/home/clp/htdocs/app/files/public"
 
 usage() {
   cat >&2 <<'EOF'
@@ -104,54 +110,110 @@ DOMAIN="${DOMAIN%%/*}"
 [[ -f "$DB" ]] || { echo "CloudPanel database not found: $DB" >&2; exit 1; }
 
 cp -a "$DB" "/root/db.sq3.$(date +%Y-%m-%d-%H-%M-%S).bak"
-install -d -m 755 "$WEBROOT" "$SSL_DIR"
+install -d -m 755 "$SSL_DIR" "${WEBROOT}/.well-known/acme-challenge"
 
 OLD_DOMAIN=""
 if [[ -f "$VHOST" ]]; then
-  # The custom-domain vhost may already declare server_name but leave it empty
-  # ("server_name ;") before a domain is configured — that is not an error, the
-  # script simply fills it in. A missing directive altogether is still an error.
+  # The vhost is rewritten from the template further down, so the only thing read
+  # out of an existing file is its server_name: it becomes the "old domain" that
+  # the database rewrite at the end replaces. An empty "server_name ;" (the state
+  # before a domain is configured) and an unrendered CloudPanel placeholder
+  # ("{{server_name}}", "{{dashboardURL}}") are reported but are not a previous
+  # domain; a file without any server_name is refused instead of overwritten.
   if grep -qE '^[[:space:]]*server_name[[:space:]]+' "$VHOST"; then
     OLD_DOMAIN="$(grep -m1 -E '^[[:space:]]*server_name[[:space:]]+' "$VHOST" \
       | sed -E 's/^[[:space:]]*server_name[[:space:]]+//; s/[[:space:]]*;.*//')"
-    sed -E -i "s/^([[:space:]]*server_name[[:space:]]+).*/\1${DOMAIN};/" "$VHOST"
-    if [[ -z "$OLD_DOMAIN" ]]; then
+    if [[ "$OLD_DOMAIN" =~ ^\{\{.*\}\}$ ]]; then
+      echo "unrendered placeholder in ${VHOST}: ${OLD_DOMAIN}"
+      OLD_DOMAIN=""
+    elif [[ -z "$OLD_DOMAIN" ]]; then
       echo "empty server_name set to: ${DOMAIN}"
     elif [[ "$OLD_DOMAIN" == "$DOMAIN" ]]; then
       echo "server_name already set to: ${DOMAIN}"
     else
       echo "server_name changed: ${OLD_DOMAIN} -> ${DOMAIN}"
     fi
+    cp -a "$VHOST" "/root/custom-domain.conf.$(date +%Y-%m-%d-%H-%M-%S).bak"
   else
-    echo "No server_name in $VHOST" >&2
+    echo "No server_name in $VHOST (refusing to overwrite it)" >&2
     exit 1
   fi
 else
-  cat > "$VHOST" <<EOF
-server {
-  listen 80;
-  listen [::]:80;
-  server_name ${DOMAIN};
-  location ^~ /.well-known/acme-challenge/ {
-    root ${WEBROOT};
-    default_type "text/plain";
-  }
-  location / {
-    return 301 https://\$host\$request_uri;
-  }
+  echo "no existing ${VHOST}; writing it"
+fi
+
+# --- Panel vhost -------------------------------------------------------------
+# CloudPanel's own modern custom-domain vhost: a 443 listener in front of the
+# reverse proxy to the panel on https://127.0.0.1:8443. There is deliberately no
+# port-80 server block here: Let's Encrypt follows the port-80 catch-all's
+# redirect to https and does not validate the certificate on an https redirect
+# target, and the panel listener itself serves "/.well-known" (auth_basic off)
+# from its own root - that is the directory the HTTP-01 token is written into,
+# both by CloudPanel and by the certbot fallback below.
+#
+# QUIC/HTTP3 and the standalone http2/http3 directives only exist in recent nginx
+# builds, so the flavour is derived from the installed build exactly like
+# cloudpanel-fix.sh does it. An existing vhost is rewritten rather than patched:
+# CloudPanel's own renewal cron rewrites this very file from its bundled
+# template, so nothing but the server_name is ever meant to be hand-edited here.
+NGINX_VER="$(nginx -v 2>&1 | sed -n 's/.*nginx\///p' | awk '{print $1}')"
+NGINX_BUILD="$(nginx -V 2>&1 || true)"
+version_ge() { printf '%s\n%s\n' "$1" "$2" | sort -V -C; }
+NGINX_HTTP3=0
+NGINX_HTTP2_DIRECTIVE=0
+if version_ge "1.25.0" "$NGINX_VER" && grep -q 'http_v3_module' <<< "$NGINX_BUILD"; then
+  NGINX_HTTP3=1
+fi
+if version_ge "1.25.1" "$NGINX_VER"; then
+  NGINX_HTTP2_DIRECTIVE=1
+fi
+
+# Fills LISTEN_DIRECTIVES / TLS_DIRECTIVES for the requested flavour:
+#   quic/http3 - nginx >= 1.25.1 built with --with-http_v3_module
+#   quic/http2 - nginx 1.25.0 built with --with-http_v3_module ("http2 on;" is 1.25.1)
+#   http2      - nginx >= 1.25.1 without the http3 module
+#   legacy     - anything older: "listen 443 ssl http2"
+#   plain      - fallback for a build that rejects the selected flavour
+vhost_directives() {
+  LISTEN_DIRECTIVES=""
+  TLS_DIRECTIVES=""
+  if [[ "$1" == "plain" ]]; then
+    LISTEN_DIRECTIVES="  listen 443 ssl;
+  listen [::]:443 ssl;"
+  elif [[ "$1" == "legacy" ]]; then
+    LISTEN_DIRECTIVES="  listen 443 ssl http2;
+  listen [::]:443 ssl http2;"
+  elif [[ "$1" == "http2" ]]; then
+    LISTEN_DIRECTIVES="  listen 443 ssl;
+  listen [::]:443 ssl;"
+    TLS_DIRECTIVES="  http2 on;"
+  elif [[ "$1" == "quic/http2" ]]; then
+    LISTEN_DIRECTIVES="  listen 443 quic;
+  listen 443 ssl http2;
+  listen [::]:443 quic;
+  listen [::]:443 ssl http2;"
+    TLS_DIRECTIVES="  http3 on;"
+  else
+    LISTEN_DIRECTIVES="  listen 443 quic;
+  listen 443 ssl;
+  listen [::]:443 quic;
+  listen [::]:443 ssl;"
+    TLS_DIRECTIVES="  http2 on;
+  http3 on;"
+  fi
 }
 
-# Reverse proxy to the panel, mirroring CloudPanel's own custom-domain vhost.
-# Only the plain "listen 443 ssl" form is used so this file stays valid on every
-# nginx version CloudPanel supports (no http2/http3 directive guessing).
+write_vhost() {
+  cat > "$VHOST" <<EOF
 server {
-  listen 443 ssl;
-  listen [::]:443 ssl;
+${LISTEN_DIRECTIVES}
+${TLS_DIRECTIVES}
   ssl_certificate_key ${SSL_DIR}/custom-domain.key;
   ssl_certificate ${SSL_DIR}/custom-domain.crt;
   server_name ${DOMAIN};
   client_max_body_size 5048M;
-  root /home/clp/htdocs/app/files/public;
+  root ${WEBROOT};
+  #access_log /home/clp/logs/nginx/access.log;
   error_log /home/clp/logs/nginx/error.log;
   add_header Cache-Control no-transform;
   location / {
@@ -171,27 +233,20 @@ server {
   }
 }
 EOF
-fi
-
-# Ensure an HTTP-01 challenge location exists (needed when the vhost already
-# existed but had no ACME location yet).
-if ! grep -q 'acme-challenge' "$VHOST"; then
-  cat >> "$VHOST" <<EOF
-
-server {
-  listen 80;
-  listen [::]:80;
-  server_name ${DOMAIN};
-  location ^~ /.well-known/acme-challenge/ {
-    root ${WEBROOT};
-    default_type "text/plain";
-  }
-  location / {
-    return 301 https://\$host\$request_uri;
-  }
 }
-EOF
+
+if [[ "$NGINX_HTTP3" == "1" && "$NGINX_HTTP2_DIRECTIVE" == "1" ]]; then
+  VHOST_FLAVOUR="quic/http3"
+elif [[ "$NGINX_HTTP3" == "1" ]]; then
+  VHOST_FLAVOUR="quic/http2"
+elif [[ "$NGINX_HTTP2_DIRECTIVE" == "1" ]]; then
+  VHOST_FLAVOUR="http2"
+else
+  VHOST_FLAVOUR="legacy"
 fi
+vhost_directives "$VHOST_FLAVOUR"
+write_vhost
+echo "custom-domain vhost written (nginx ${NGINX_VER:-unknown}: http3=${NGINX_HTTP3}, http2_directive=${NGINX_HTTP2_DIRECTIVE}): ${VHOST}"
 
 # Install the helper tools before nginx is (re)loaded: sqlite3 rewrites the panel
 # domain below and openssl creates the temporary placeholder certificate just
@@ -276,15 +331,29 @@ if [[ ! -s "${SSL_DIR}/custom-domain.crt" || ! -s "${SSL_DIR}/custom-domain.key"
   echo "temporary self-signed certificate created (replaced by Let's Encrypt below)"
 fi
 
-nginx -t
+# Load the rewritten vhost. A build whose http_v3 module is built as a dynamic
+# module but not loaded still advertises it in "nginx -V", so when nginx refuses
+# the selected flavour fall back to the plain "listen 443 ssl" form instead of
+# leaving a configuration nginx cannot load.
+if ! nginx -t; then
+  if [[ "$NGINX_HTTP3" == "1" || "$NGINX_HTTP2_DIRECTIVE" == "1" ]]; then
+    echo "warning: this nginx build rejected the ${VHOST_FLAVOUR} vhost; rewriting ${VHOST} in the plain 443 form" >&2
+    vhost_directives plain
+    write_vhost
+    nginx -t
+  else
+    echo "nginx rejected the configuration above; ${VHOST} was left as written" >&2
+    exit 1
+  fi
+fi
 systemctl reload nginx
 
 # --- Vhost verification -------------------------------------------------------
 # Two listeners are involved and only one of them needs this vhost: CloudPanel
 # serves the admin panel itself from its own instance on port 8443, which is a
 # catch-all ("server_name _;"), so https://<domain>:8443 answers for any hostname
-# even when no vhost exists. The file written above is the panel's port-80/443
-# entry point and only does anything when the nginx that owns those ports really
+# even when no vhost exists. The file written above is the panel's port-443
+# entry point and only does anything when the nginx that owns that port really
 # includes it (/etc/nginx/nginx.conf -> sites-enabled/*.conf): otherwise the
 # request lands on the default server and the TLS handshake is rejected
 # ("unrecognized name"). Report which of the two is the case instead of leaving
@@ -349,11 +418,16 @@ if [[ -n "$ISSUED" ]]; then
 else
   # Fallback: issue with certbot's webroot plugin. It writes to /etc/letsencrypt,
   # which CloudPanel's renewal cron never touches, so the two cannot fight over
-  # the certificate files.
+  # the certificate files. The webroot is CloudPanel's own challenge directory:
+  # the panel listener serves it over the port-80 -> https redirect, which is how
+  # the panel's own clpctl path validates too. The deploy hook keeps the copies
+  # nginx actually reads in sync on every renewal, so a renewed certificate does
+  # not sit unused in /etc/letsencrypt while nginx serves the expired one.
   echo "falling back to certbot for the certificate" >&2
   command -v certbot >/dev/null 2>&1 || { apt-get update; apt-get install -y certbot; }
   certbot certonly --webroot -w "$WEBROOT" -d "$DOMAIN" \
-    --agree-tos --register-unsafely-without-email --non-interactive
+    --agree-tos --register-unsafely-without-email --non-interactive \
+    --deploy-hook "install -m 600 /etc/letsencrypt/live/${DOMAIN}/privkey.pem ${SSL_DIR}/custom-domain.key && install -m 644 /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ${SSL_DIR}/custom-domain.crt && systemctl reload nginx"
   install -m 600 "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" "${SSL_DIR}/custom-domain.key"
   install -m 644 "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" "${SSL_DIR}/custom-domain.crt"
 
