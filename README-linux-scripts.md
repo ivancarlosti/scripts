@@ -1,6 +1,6 @@
 # Linux Scripts
 
-Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, Fail2Ban setup (with optional Cloudflare integration), and pointing the CloudPanel admin panel at a custom domain. Every script is idempotent and safe to re-run.
+Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, Fail2Ban setup (with optional Cloudflare integration), a locked-down key-only SSH account for the Fail2Ban UI, and pointing the CloudPanel admin panel at a custom domain. Every script is idempotent and safe to re-run.
 
 ---
 
@@ -194,6 +194,63 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
+### [`fail2ban-ui-ssh-user.sh`](linux-scripts/fail2ban-ui-ssh-user.sh)
+**Purpose:** Creates (or updates) the dedicated, key-only SSH account that the [Fail2Ban UI](https://github.com/swissmakers/fail2ban-ui) uses to manage this host's Fail2Ban, grants it exactly the access that connector needs — and nothing more — and prints the generated RSA private key so it can be pasted into the UI.
+
+**Workflow:**
+1. Creates the account (`sa_fail2ban` by default) with a home directory and `/bin/bash`, then strips **every** way into it: no password hash at all (`usermod -p '!'`) and removal from `sudo`/`wheel` if it turns out to be a member of either, since that membership alone would silently grant full root.
+2. Generates a 4096-bit RSA key in **PEM** format (`ssh-keygen -t rsa -b 4096 -m PEM` — the PKCS#1 `BEGIN RSA PRIVATE KEY` form the UI's Go SSH client expects), installs the public key in `~/.ssh/authorized_keys` (mode `600`) with OpenSSH's `restrict` option (no pty, agent, port or X11 forwarding), and **prints the private key once** between copy markers.
+3. Writes `/etc/sudoers.d/fail2ban-ui-<user>` (mode `0440`, `root:root`), validating it with `visudo -cf` **before** installing it and with `visudo -c` afterwards (rolling back to the previous file — or removing it — if the whole configuration would stop parsing). Only two commands are granted, next to `Defaults:<user> !requiretty` (the connector runs `sudo -n` with no tty): `fail2ban-client *`, because jail names are dynamic, and `systemctl restart fail2ban`.
+4. Grants read/write access to `/etc/fail2ban` through **POSIX ACLs** (`setfacl -R -m u:<user>:rwX`, plus a default ACL on every directory so new files inherit it): the connector reads the config tree and stages its writes (`action.d`, `filter.d`, `jail.d`, `.f2bui.bak` files) **as the login user**, so the ACLs — not a broad group membership — are what make that work.
+5. Runs a **local self-test** before deleting anything: logs in over `127.0.0.1` with the key it just generated, runs `sudo -n fail2ban-client ping` as the account, and prints `sudo -l -U <user>` as sudo itself reports the rules. Only then is the private key shredded from the server.
+
+**Options** (values may also come from the matching environment variable):
+
+| Option | Environment | Purpose |
+|--------|-------------|---------|
+| `--user <name>` | `SA_USER` | Service account name (default: `sa_fail2ban`) |
+| `--key-bits <n>` | `KEY_BITS` | RSA key size (default: `4096`, minimum `2048`) |
+| `--from <addr[,addr]>` | `KEY_FROM` | Restrict the key to these source addresses / CIDRs |
+| `--reverse-tunnel <port>` | — | Let the key listen on `localhost:<port>` only, as the UI's reverse tunnel for events needs (uses explicit `permitlisten`, `no-pty`, `no-port-forwarding`… instead of `restrict`) |
+| `--with-log-read` | — | Add the account to `adm`, so the UI's logpath test can read `/var/log` (Debian/Ubuntu) |
+| `--log-group <group>` | `LOG_GROUP` | Same, with an explicit group name |
+| `--rotate-key` | — | Generate a new private key even when a managed key already exists |
+| `--output <path>` | `OUTPUT_PATH` | Also write the private key to `<path>` (mode `600`, `root`) |
+| `--dry-run` | — | Print every planned change (account, `authorized_keys` entry, sudoers file, ACLs) and modify nothing |
+| `-h`, `--help` | — | Show usage and exit |
+
+```bash
+# First run: create the account and print the private key
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-ui-ssh-user.sh | sudo bash
+
+# Restrict the key to the UI host, allow the reverse tunnel and log reading
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-ui-ssh-user.sh \
+  | sudo bash -s -- --from 203.0.113.10 --reverse-tunnel 2222 --with-log-read
+```
+
+Then, in the UI's *Manage Servers* form, set **SSH user** to `sa_fail2ban` and provide the private key (inside the container it belongs at `/config/.ssh/id_rsa`, mode `600`). The script prints that same summary — host, port, user, key path — when it finishes.
+
+**Diagnostics:** every step is printed as `==> [step NN] …`, and if any command fails the script prints the failing line, the command and the exit code instead of stopping silently:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-ui-ssh-user.sh | sudo VERBOSE=1 bash
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
+| `CLEAR_SCREEN` | Deliberately **not** supported — the terminal is never cleared, so the printed private key cannot be wiped off the screen |
+
+> **This script never touches `/etc/ssh`.** Per-user sshd hardening (`Match User …`) depends on each host's own configuration, so it is left alone; password logins are impossible for the account anyway, because it has no password hash at all. `sshd -T` is only *read*, to report the effective posture (`PasswordAuthentication`, `PubkeyAuthentication`, `PermitEmptyPasswords`, the port) and to warn when the host would refuse key logins.
+
+> **Re-runs are safe and keep the UI working.** The managed key is identified by its comment (`fail2ban-ui@<host>`), so its `authorized_keys` entry is refreshed — options included — on every run while any other key of the account is preserved, and the existing private key is **kept** unless `--rotate-key` is passed. Sudo rules and ACLs are applied idempotently, and a replaced sudoers file is copied to `/root/sudoers.d-fail2ban-ui-<user>.<timestamp>.bak` first.
+
+> **Revoking everything:** `userdel -r sa_fail2ban`, `rm -f /etc/sudoers.d/fail2ban-ui-sa_fail2ban`, `setfacl -R -x u:sa_fail2ban /etc/fail2ban` and `find /etc/fail2ban -type d -exec setfacl -d -x u:sa_fail2ban {} +` (the same commands are printed at the end of every run).
+
+> **Requirements:** root, a running Fail2Ban with `/etc/fail2ban` in place (`server-prep.sh` installs it, `fail2ban-setup.sh` configures it) and an SSH server for the UI's own connection. `setfacl` is installed automatically when the `acl` package is missing; `ssh-keygen` (openssh-client), `visudo` (sudo) and `fail2ban-client` are required. `--with-log-read` additionally expects the `adm` group, and the UI's ban-notification callback needs `curl` and `jq` on this host — the script warns when either is missing.
+
+---
+
 ## 📦 Requirements
 
 | Dependency | Purpose |
@@ -201,9 +258,12 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | Debian / Ubuntu server | Target operating system (scripts use `apt`) |
 | `systemd` | Required by `disable-services.sh` |
 | `nginx` | Required by `cloudpanel-fix.sh` |
-| [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh` |
-| `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) |
-| `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses |
+| [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh`; also the service whose SSH access `fail2ban-ui-ssh-user.sh` provisions |
+| `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) and by the Fail2Ban UI's ban-notification callback on the managed host |
+| `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses, and by the Fail2Ban UI's ban-notification callback on the managed host |
+| `openssh-server` | Required by `fail2ban-ui-ssh-user.sh`: the Fail2Ban UI connects to this host over SSH, and `sshd -T` feeds its read-only posture report |
+| `sudo` (`visudo`) | Required by `fail2ban-ui-ssh-user.sh` to install and validate the sudoers drop-in of the service account |
+| `acl` (`setfacl`) | Required by `fail2ban-ui-ssh-user.sh` to grant the service account read/write access to `/etc/fail2ban`; installed automatically when missing |
 | `CloudPanel` + `clpctl` | Required by `dashboard-domain.sh` to change the admin panel domain and register it (`app:set:config-value`, when the CLI provides it); it also issues the certificate when its CLI supports it |
 | `sqlite3`, `openssl` | Used by `dashboard-domain.sh`; installed automatically if missing |
 | `certbot` | Fallback certificate issuer for `dashboard-domain.sh`, installed only when CloudPanel's own `clpctl` cannot issue the certificate |
