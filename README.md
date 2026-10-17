@@ -86,7 +86,7 @@ Shell scripts for setting up and hardening Linux servers (Debian/Ubuntu).
 | 2 | `redis-setup.sh` | Applies Redis-recommended kernel settings (`vm.overcommit_memory`, `net.ipv4.ip_nonlocal_bind`) |
 | 3 | `disable-services.sh` | Disables and stops unused services (outdated PHP-FPM, memcached, postfix, proftpd, ufw, varnish) |
 | 4 | `cloudpanel-fix.sh` | Hardens nginx on CloudPanel |
-| 5 | `fail2ban-setup.sh` | Configures Fail2Ban — with optional Cloudflare firewall banning, or local-only when no credentials are passed |
+| 5 | `fail2ban-setup.sh` | Configures Fail2Ban — with optional Cloudflare firewall banning, or local-only when no credentials are passed — and installs generated nginx/CloudPanel web jails that ban probes, failed logins, enumeration and known scanners |
 | 6 | `dashboard-domain.sh` | Points the CloudPanel admin panel at a custom domain, registers it with CloudPanel (Settings → "Domain Name" and its renewal cron) and has CloudPanel issue a Let's Encrypt certificate for it |
 | 7 | `fail2ban-ui-ssh-user.sh` | Provisions the locked-down, key-only SSH account the [Fail2Ban UI](https://github.com/swissmakers/fail2ban-ui) uses to manage this host, prints its RSA private key and grants it nothing beyond `fail2ban-client`, a Fail2Ban restart and ACL access to `/etc/fail2ban` |
 

@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 ---
 
 ### [`fail2ban-setup.sh`](linux-scripts/fail2ban-setup.sh)
-**Purpose:** Configures Fail2Ban and, optionally, extends banning to the Cloudflare firewall.
+**Purpose:** Configures Fail2Ban, optionally extends banning to the Cloudflare firewall, and installs four stack-universal **web jails** that stop nginx attack traffic (probes, failed logins, enumeration, known scanners) on CloudPanel and plain Debian/Ubuntu hosts alike.
 
 It runs **standalone** (separate from `cloudpanel-fix.sh`) and picks its mode from the
 command line:
@@ -128,6 +128,20 @@ command line:
 | **Local only** | No credentials provided | Removes any leftover Cloudflare helper/wiring and writes an additive `jail.d` override that bans via the server's own action (`nftables-multiport`, else `iptables-multiport`) — **no Cloudflare API calls at all** |
 
 Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
+
+**Web protection** (installed by default in both modes, disable with `--no-web`):
+
+| Jail | What it bans |
+|------|--------------|
+| `web-probe` | Requests for things that are never served on purpose: `/.env`, `/.git/...`, `.../wp-config.php.bak`, database/backup exports, `.php` files under `uploads/` or `assets/`, and 4xx/`000` answers to any of them |
+| `web-login` | Failed logins: `POST` to `wp-login.php`, `administrator/index.php`, `.../index.php/login`, Magento customer logins or `xmlrpc.php` answered `200`/`401`/`403` (a `302`, i.e. a successful login, is ignored) |
+| `web-enum` | User/plugin enumeration (`/wp-json/wp/v2/users/1`, `?author=1`, ...) |
+| `web-badbots` | Known scanners by User-Agent (`sqlmap`, `wpscan`, `nuclei`, `masscan`, ...) — on by default, `--no-badbots` drops it |
+
+* The filters are **generated for the discovered logs**, not shipped blind: the script samples the discovered logs to decide which field really holds a bannable client address (`$remote_addr`, or one specific `X-Forwarded-For` hop when Cloudflare fronts the site without `real_ip`) and refuses to guess when guessing would ban the CDN edge; it then runs `fail2ban-regex` self-tests (every built-in reference attack must be caught and no legitimate reference line may match) and only then writes `/etc/fail2ban/filter.d/web-*.conf` plus one jail file, `/etc/fail2ban/jail.d/zz-fail2ban-setup.local`. An inconclusive self-test warns and continues by default; `--strict-selftest` makes it abort before anything is written.
+* The `ignoreip` of the running `sshd` jail is merged into every web jail (prose answers such as `No IP address/network is ignored` and trailing comments are dropped) and `127.0.0.1/8 ::1` is always appended, so a web ban can never lock you out of your own management addresses.
+* `backend = auto` is written explicitly: Debian's `defaults-debian.conf` forces `backend = systemd` globally, which would leave these file-based jails monitoring nothing.
+* A jail file we did not write (no marker) is backed up (`*.bak.<timestamp>`) before being replaced; re-runs are byte-stable and take no second backup.
 
 **Options** (values may also come from the matching environment variable):
 
@@ -140,6 +154,24 @@ Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
 | `--cf-target <ip\|hostname>` | `CF_TARGET` | Rule target type (default: `ip`) |
 | `-h`, `--help` | — | Show usage and exit |
 
+**Web protection options** (the full list is in `--help`; the ones you normally touch):
+
+| Option | Environment | Purpose |
+|--------|-------------|---------|
+| `--web` / `--no-web` | `WEB` | Install / skip the web jails (default: install) |
+| `--badbots` / `--no-badbots` | `WEB_BADBOTS` | Include the scanner User-Agent jail (default: include) |
+| `--ip-source <mode>` | `WEB_IP_SOURCE` | `remote` \| `xforwarded` \| `auto` (default). `auto` picks `xforwarded` when Cloudflare edge addresses show up in the logs and nginx `real_ip` is not restored, and refuses to guess when guessing would ban the CDN edge instead of the attacker |
+| `--xff-hop <first\|last>` | `WEB_XFF_HOP` | Which `X-Forwarded-For` hop holds the client; `last` (default) is the one Cloudflare appends and a client cannot spoof |
+| `--logpath <glob>` / `--extra-logpath <glob>` | `WEB_LOG_GLOB` / `WEB_EXTRA_LOG_GLOB` | Replace / extend the auto-discovered access logs (repeatable) |
+| `--ignoreip <ip,cidr>` | `WEB_IGNOREIP` | Extra addresses whitelisted in every web jail, on top of the merged `sshd` list (repeatable) |
+| `--allow-ua <regex>` / `--no-allowlist` | `WEB_ALLOW_UA` / `WEB_ALLOWLIST=0` | Extend / drop the built-in "never banned" User-Agent allow-list (Uptime Kuma, Pingdom, Datadog, ...) |
+| `--aggressive-login`, `--aggressive-enum` | `WEB_AGGRESSIVE_LOGIN`, `WEB_AGGRESSIVE_ENUM` | Widen `web-login` to generic `login`/`signin`/`admin` pages and `web-enum` to any `/wp-json/wp/v2/users/<id>` (more coverage, more false positives) |
+| `--web-maxretry <n>`, `--web-findtime <t>`, `--web-bantime <t>` | `WEB_MAXRETRY`, `WEB_FINDTIME`, `WEB_BANTIME` | Override the per-jail thresholds (e.g. `--web-findtime 10m --web-bantime 4h`) |
+| `--force-ip-source`, `--no-selftest`, `--strict-selftest` | `WEB_FORCE_IP_SOURCE`, `WEB_SELFTEST=0`, `WEB_SELFTEST_STRICT` | Override the safety gates: accept a refused IP source, skip the `fail2ban-regex` self-test, or make an inconclusive self-test fatal |
+| `--dry-run` | — | Print the filters and the jail file (and write nothing) |
+| `--status` | — | Show the web jails and their current/total bans, then exit |
+| `--uninstall-web` | — | Remove the web filters and jail file (keeps the Cloudflare helper and the local jail), then exit |
+
 ```bash
 # With Cloudflare (recommended: a scoped Account Firewall Access Rules API token)
 curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
@@ -151,6 +183,20 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 # Full per-command trace
 curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
   | sudo VERBOSE=1 bash -s -- --cf-account <ACCOUNT_ID> --cf-token <API_TOKEN>
+
+# Inspect the web jails: what would be installed, then what is running
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --status
+
+# Cloudflare proxying without nginx real_ip restored: ban the client, not the edge
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --ip-source xforwarded --xff-hop last
+
+# Remove the web jails again (Cloudflare helper and local jail are kept)
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --uninstall-web
 ```
 
 | Variable | Purpose |
@@ -158,7 +204,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
 | `CLEAR_SCREEN=1` | Clears the terminal at the end |
 
-> **Note:** in local mode the jail override is written to `/etc/fail2ban/jail.d/`, which is additive — CloudPanel values in `/etc/fail2ban/jail.local` still take precedence. The Cloudflare helper is stored `700` (root-only) because it contains the credential.
+> **Note:** in local mode the jail override is written to `/etc/fail2ban/jail.d/`, which is additive — CloudPanel values in `/etc/fail2ban/jail.local` still take precedence. The web jails live in the same directory (`jail.d/zz-fail2ban-setup.local`) and, because `jail.d` is parsed *after* `jail.local`, their per-jail settings win for those sections only. The Cloudflare helper is stored `700` (root-only) because it contains the credential.
 
 ---
 
