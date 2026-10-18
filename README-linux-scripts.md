@@ -135,7 +135,7 @@ Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
 |------|--------------|
 | `web-probe` | Requests for things that are never served on purpose: `/.env`, `/.git/...`, `.../wp-config.php.bak`, database/backup exports, `.php` files under `uploads/` or `assets/`, and 4xx/`000` answers to any of them |
 | `web-login` | Failed logins: `POST` to `wp-login.php`, `administrator/index.php`, `.../index.php/login`, Magento customer logins or `xmlrpc.php` answered `200`/`401`/`403` (a `302`, i.e. a successful login, is ignored) |
-| `web-enum` | User/plugin enumeration (`/wp-json/wp/v2/users/1`, `?author=1`, ...) |
+| `web-enum` | User enumeration through `/wp-json/wp/v2/users` and `.../users/<id>` (default: numeric IDs ≥ 100; `--aggressive-enum` accepts any ID) |
 | `web-badbots` | Known scanners by User-Agent (`sqlmap`, `wpscan`, `nuclei`, `masscan`, ...) — on by default, `--no-badbots` drops it |
 
 * The filters are **generated for the discovered logs**, not shipped blind: the script samples the discovered logs to decide which field really holds a bannable client address (`$remote_addr`, or one specific `X-Forwarded-For` hop when Cloudflare fronts the site without `real_ip`) and refuses to guess when guessing would ban the CDN edge; it then runs `fail2ban-regex` self-tests (every built-in reference attack must be caught and no legitimate reference line may match) and only then writes `/etc/fail2ban/filter.d/web-*.conf` plus one jail file, `/etc/fail2ban/jail.d/zz-fail2ban-setup.local`. An inconclusive self-test warns and continues by default; `--strict-selftest` makes it abort before anything is written.
@@ -160,6 +160,23 @@ Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
 * Before installing, a `fail2ban-regex` self-test uses realistic server lines: no legitimate line may match, and every reference attack address must be caught — IPv4, IPv6, a low source port (`:443`) and an ISO-timestamp dedicated-log line. It honours `--no-selftest` and `--strict-selftest`.
 * If no OpenVPN/system log file exists, the script warns and skips the jail. If a file exists but its last 200 lines contain no OpenVPN messages (e.g. journald-only logging), it warns that the jail may monitor nothing — feed a file with rsyslog and pass `--openvpn-logpath`, or set `backend = systemd` in the generated jail.
 * Re-runs are idempotent: a pre-existing `openvpn-local.conf`/jail file without the managed marker is backed up (`*.bak.<timestamp>`) before replacement.
+
+**Ban thresholds** (defaults; one "retry" is one matching log line from the same source IP, and the ban fires on the Nth match inside `findtime`):
+
+| Filter / jail | One retry is | `maxretry` | `findtime` | `bantime` |
+|---|---|---:|---:|---:|
+| `web-probe` / `[web-probe]` | A request for a probe/sensitive path (`.env`, `.git`, `wp-config.php.bak`, SQL dumps, PHP under `uploads/`, etc.) answered with **4xx or `000`** | 3 | 1h | Global value; local-mode baseline 1h |
+| `web-login` / `[web-login]` | A `POST` to a recognized login form/API answered **200/401/403**, or a **401** on an admin panel | 8 | 10m | Global value; local-mode baseline 1h |
+| `web-enum` / `[web-enum]` | A **200** response to `/wp-json/wp/v2/users…`; by default numeric user IDs ≥ 100, or any ID with `--aggressive-enum` | 4 | 1h | Global value; local-mode baseline 1h |
+| `web-badbots` / `[web-badbots]` | Any request whose User-Agent matches the scanner list (`sqlmap`, `wpscan`, `nuclei`, `nmap`, `masscan`, etc.) | 2 | 1h | Global value; local-mode baseline 1h |
+| `openvpn-local` / `[openvpn]` | One TLS/certificate/authentication/HMAC failure line (`TLS Auth Error`, `VERIFY ERROR`, handshake failed, `SIGUSR1[soft,tls-error]`/`connection-reset`, HMAC failure) | 3 | 10m | 1h |
+| `sshd` / `[sshd]` *(not created by this script; enabled in local mode)* | One failed SSH authentication, as detected by the distro `sshd` filter | 5 | 10m | Local-mode baseline 1h; CloudPanel may override |
+
+* `findtime` is a **sliding window**, not a fixed clock hour: "3 in 1h" means the third matching event arrives while the oldest of the three is still within the last hour. Events spaced farther apart than the window never reach the threshold.
+* The web jails do **not** set `bantime` per jail by default, so a global `bantime`/`bantime.increment` keeps working. In no-Cloudflare local mode the script writes a `1h` baseline; on CloudPanel, check `/etc/fail2ban/jail.local`, whose values take precedence. `--web-bantime` forces a value for every web jail.
+* `--web-maxretry` and `--web-findtime` apply to **all** web jails at once, not to one filter. The OpenVPN jail has its own `--openvpn-maxretry`, `--openvpn-findtime` and `--openvpn-bantime`.
+* `web-badbots` is included by default; `--no-badbots` removes that jail. Addresses in `ignoreip` never count toward any threshold.
+* The `sshd` row is the distro filter, not one this script generates: local mode only enables `[sshd]` and supplies the `[DEFAULT]` baseline timings above; CloudPanel's `/etc/fail2ban/jail.local` may override them.
 
 **Options** (values may also come from the matching environment variable):
 
