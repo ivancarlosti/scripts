@@ -25,7 +25,7 @@
 #   --xff-hop <first|last>     Hop used by --ip-source xforwarded          [WEB_XFF_HOP]
 #   --logpath <glob>           Use these access logs (repeatable)          [WEB_LOG_GLOB]
 #   --extra-logpath <glob>     Add to the auto-discovered logs             [WEB_EXTRA_LOG_GLOB]
-#   --ignoreip <list>          IPs/CIDRs whitelisted in every web jail     [WEB_IGNOREIP]
+#   --ignoreip <list>          IPs/CIDRs whitelisted in every generated jail [WEB_IGNOREIP]
 #   --allow-ua <regex>         Extra "never ban this UA" pattern           [WEB_ALLOW_UA]
 #   --no-allowlist             Drop the built-in monitoring UA allow-list  [WEB_ALLOWLIST=0]
 #   --aggressive-login         Also match generic /login, /signin, /admin  [WEB_AGGRESSIVE_LOGIN]
@@ -33,12 +33,21 @@
 #   --web-maxretry <n>         Override maxretry of every web jail         [WEB_MAXRETRY]
 #   --web-findtime <time>      Override findtime of every web jail        [WEB_FINDTIME]
 #   --web-bantime <time>       Override bantime of every web jail         [WEB_BANTIME]
+#   --openvpn | --no-openvpn   Force / skip the OpenVPN jail (default: auto) [OPENVPN]
+#   --openvpn-logpath <path>   OpenVPN log to watch (default: discover);
+#                              naming a log also enables the jail            [OPENVPN_LOG]
+#   --openvpn-banaction <act>  OpenVPN ban action (default: nftables or
+#                              iptables, all ports)                        [OPENVPN_BANACTION]
+#   --openvpn-maxretry <n>     Failures before an OpenVPN ban (default 3)  [OPENVPN_MAXRETRY]
+#   --openvpn-findtime <time>  Window for those failures (default 10m)     [OPENVPN_FINDTIME]
+#   --openvpn-bantime <time>   OpenVPN ban duration (default 1h)           [OPENVPN_BANTIME]
 #   --force-ip-source          Accept a combination the gates refuse      [WEB_FORCE_IP_SOURCE]
-#   --no-selftest              Skip the fail2ban-regex self-test          [WEB_SELFTEST=0]
+#   --no-selftest              Skip the fail2ban-regex self-tests         [WEB_SELFTEST=0]
 #   --strict-selftest          Treat an inconclusive self-test as an error [WEB_SELFTEST_STRICT]
-#   --dry-run                  Print the filters and jail file, write nothing
-#   --status                   Show the web jails and their current bans
+#   --dry-run                  Print the filters and jail files, write nothing
+#   --status                   Show the web and OpenVPN jails and their bans
 #   --uninstall-web            Remove filters + web jail file, keep the rest
+#   --uninstall-openvpn        Remove the OpenVPN filter + jail file only
 #   -h, --help                 Show this help and exit
 #
 # Legacy auth requires BOTH --cf-email and --cf-key; otherwise pass --cf-token.
@@ -47,6 +56,11 @@
 # n8n, static sites): no generic words are matched, every rule is anchored to a
 # known scanner path or a known login endpoint, and only failed statuses count.
 # It ABORTS instead of installing a filter that would match legitimate traffic.
+#
+# OpenVPN protection is independent of the Cloudflare/local choice and is
+# local-only: when an OpenVPN server is detected, an [openvpn] jail bans TLS/
+# certificate/username-password/HMAC failures on all ports for TCP and UDP.
+# Use --no-openvpn to skip it or --openvpn to force it.
 #
 # Diagnostics - same conventions as cloudpanel-fix.sh:
 #   * every step is announced, so you can see exactly how far it got;
@@ -101,6 +115,11 @@ WEB_JAIL="/etc/fail2ban/jail.d/zz-fail2ban-setup.local"
 FILTER_DIR="/etc/fail2ban/filter.d"
 WEB_FILTERS=(web-probe web-login web-enum web-badbots)
 WEB_STATUS_MARKER="/etc/fail2ban/.zz-fail2ban-setup-web.installed"
+# A distinct filter name keeps the distro's own openvpn.conf and any
+# openvpn.local untouched; the [openvpn] jail below points at this one.
+OPENVPN_FILTER_NAME="openvpn-local"
+OPENVPN_FILTER_FILE="$FILTER_DIR/$OPENVPN_FILTER_NAME.conf"
+OPENVPN_JAIL="/etc/fail2ban/jail.d/zz-fail2ban-setup-openvpn.local"
 
 ########## Defaults (overridable via environment, then command line) ##########
 CF_ACCOUNT="${CF_ACCOUNT:-}"
@@ -123,9 +142,18 @@ WEB_FORCE_IP_SOURCE="${WEB_FORCE_IP_SOURCE:-0}"
 WEB_SELFTEST="${WEB_SELFTEST:-1}"
 WEB_SELFTEST_STRICT="${WEB_SELFTEST_STRICT:-0}"
 WEB_SAMPLE_LINES="${WEB_SAMPLE_LINES:-200}"
+
+OPENVPN="${OPENVPN:-auto}"
+OPENVPN_LOG="${OPENVPN_LOG:-}"
+OPENVPN_BANACTION="${OPENVPN_BANACTION:-}"
+OPENVPN_MAXRETRY="${OPENVPN_MAXRETRY:-3}"
+OPENVPN_FINDTIME="${OPENVPN_FINDTIME:-10m}"
+OPENVPN_BANTIME="${OPENVPN_BANTIME:-1h}"
+
 DRY_RUN=0
 STATUS_MODE=0
 UNINSTALL_WEB=0
+UNINSTALL_OPENVPN=0
 WEB_LOG_GLOBS=()
 WEB_EXTRA_LOG_GLOBS=()
 WEB_IGNOREIP_ARR=()
@@ -166,8 +194,9 @@ Web protection (installed by default, on top of whatever already works):
                              discovery (repeatable)                       [WEB_LOG_GLOB]
   --extra-logpath <glob>     Add to the auto-discovered access logs
                              (repeatable)                                 [WEB_EXTRA_LOG_GLOB]
-  --ignoreip <ip|cidr,...>   Extra IPs/CIDRs whitelisted in every web jail
-                             (repeatable, added to the existing ignoreip) [WEB_IGNOREIP]
+  --ignoreip <ip|cidr,...>   Extra IPs/CIDRs whitelisted in every web and
+                             OpenVPN jail (repeatable, added to the
+                             existing ignoreip)                          [WEB_IGNOREIP]
   --allow-ua <regex>         Extra "this User-Agent is never banned" pattern
                              (repeatable)                                 [WEB_ALLOW_UA]
   --no-allowlist             Drop the built-in monitoring User-Agent
@@ -179,13 +208,28 @@ Web protection (installed by default, on top of whatever already works):
   --web-findtime <time>      Override findtime of every web jail (e.g. 10m)[WEB_FINDTIME]
   --web-bantime <time>       Override bantime of every web jail (e.g. 4h) [WEB_BANTIME]
   --force-ip-source          Accept an IP source the safety gates refuse  [WEB_FORCE_IP_SOURCE]
-  --no-selftest              Skip the fail2ban-regex self-test            [WEB_SELFTEST=0]
+  --no-selftest              Skip the fail2ban-regex self-tests (web and
+                             OpenVPN)                                      [WEB_SELFTEST=0]
   --strict-selftest          Treat an inconclusive self-test as an error  [WEB_SELFTEST_STRICT]
-  --dry-run                  Print the filters and the jail file without
+  --dry-run                  Print the filters and the jail files without
                              writing anything (no CF wiring, no reload)
-  --status                   Show the web jails and their current bans, exit
+  --status                   Show the web and OpenVPN jails and their bans, exit
   --uninstall-web            Remove the web filters + jail file (keeps the
                              Cloudflare helper/local jail), exit
+  --uninstall-openvpn        Remove the OpenVPN filter + jail file only, exit
+
+OpenVPN protection (installed automatically when an OpenVPN server is detected):
+  --openvpn | --no-openvpn   Force / skip the OpenVPN jail (default: auto) [OPENVPN]
+  --openvpn-logpath <path>   OpenVPN/syslog log to watch instead of the first
+                             of /var/log/openvpn/server.log,
+                             /var/log/openvpn.log, /var/log/syslog,
+                             /var/log/messages; naming a log also enables
+                             the jail                                      [OPENVPN_LOG]
+  --openvpn-banaction <act>  Fail2Ban action (default: nftables[type=allports]
+                             when available, else iptables[type=allports]) [OPENVPN_BANACTION]
+  --openvpn-maxretry <n>     Failures before a ban (default: 3)           [OPENVPN_MAXRETRY]
+  --openvpn-findtime <time>  Window for those failures (default: 10m)     [OPENVPN_FINDTIME]
+  --openvpn-bantime <time>   Ban duration (default: 1h)                    [OPENVPN_BANTIME]
 
 With no Cloudflare credentials the script configures LOCAL banning only
 (the server's own iptables/nftables action). Legacy auth requires BOTH
@@ -193,6 +237,13 @@ With no Cloudflare credentials the script configures LOCAL banning only
 
 The web jails are always written to jail.d/zz-fail2ban-setup.local, which
 Fail2Ban parses AFTER CloudPanel's jail.local, so per-jail settings here win.
+
+The OpenVPN jail is local-only and never uses the Cloudflare action; it bans
+on all ports for TCP and UDP. The filter catches TLS certificate, username/
+password, HMAC/packet-authentication and tls-error/connection-reset failures,
+and ignores successful connections and ping-restart reconnects. On hosts where
+OpenVPN logs only to journald, point --openvpn-logpath at a file fed by
+rsyslog or set backend = systemd in the generated jail.
 EOF
 }
 
@@ -256,6 +307,25 @@ while [ "$#" -gt 0 ]; do
         --web-bantime)
             [ "$#" -ge 2 ] || { warn "--web-bantime requires a value"; exit 2; }
             WEB_BANTIME="$2"; shift 2 ;;
+        --openvpn)
+            OPENVPN=1; shift ;;
+        --no-openvpn)
+            OPENVPN=0; shift ;;
+        --openvpn-logpath)
+            [ "$#" -ge 2 ] || { warn "--openvpn-logpath requires a value"; exit 2; }
+            OPENVPN_LOG="$2"; shift 2 ;;
+        --openvpn-banaction)
+            [ "$#" -ge 2 ] || { warn "--openvpn-banaction requires a value"; exit 2; }
+            OPENVPN_BANACTION="$2"; shift 2 ;;
+        --openvpn-maxretry)
+            [ "$#" -ge 2 ] || { warn "--openvpn-maxretry requires a value"; exit 2; }
+            OPENVPN_MAXRETRY="$2"; shift 2 ;;
+        --openvpn-findtime)
+            [ "$#" -ge 2 ] || { warn "--openvpn-findtime requires a value"; exit 2; }
+            OPENVPN_FINDTIME="$2"; shift 2 ;;
+        --openvpn-bantime)
+            [ "$#" -ge 2 ] || { warn "--openvpn-bantime requires a value"; exit 2; }
+            OPENVPN_BANTIME="$2"; shift 2 ;;
         --force-ip-source)
             WEB_FORCE_IP_SOURCE=1; shift ;;
         --no-selftest)
@@ -268,6 +338,8 @@ while [ "$#" -gt 0 ]; do
             STATUS_MODE=1; shift ;;
         --uninstall-web)
             UNINSTALL_WEB=1; shift ;;
+        --uninstall-openvpn)
+            UNINSTALL_OPENVPN=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)
@@ -293,7 +365,7 @@ if [ "$HAS_CF" = "1" ] && [ -z "$CF_ACCOUNT" ]; then
     exit 2
 fi
 
-########## Validate the web protection options ##########
+########## Validate the web protection and OpenVPN options ##########
 case "$WEB_IP_SOURCE" in
     remote|xforwarded|auto) ;;
     *) warn "--ip-source must be remote, xforwarded or auto (got: $WEB_IP_SOURCE)"; exit 2 ;;
@@ -306,8 +378,16 @@ if [ -n "$WEB_MAXRETRY" ] && ! printf '%s' "$WEB_MAXRETRY" | grep -qE '^[0-9]+$'
     warn "--web-maxretry must be a number (got: $WEB_MAXRETRY)"
     exit 2
 fi
-if [ "$DRY_RUN" = "1" ] && [ "$UNINSTALL_WEB" = "1" ]; then
-    warn "--dry-run and --uninstall-web cannot be combined"
+case "$OPENVPN" in
+    auto|0|1) ;;
+    *) warn "OPENVPN/--openvpn must be auto, 1 or 0 (got: $OPENVPN)"; exit 2 ;;
+esac
+if ! printf '%s' "$OPENVPN_MAXRETRY" | grep -qE '^[0-9]+$'; then
+    warn "--openvpn-maxretry must be a number (got: $OPENVPN_MAXRETRY)"
+    exit 2
+fi
+if [ "$DRY_RUN" = "1" ] && { [ "$UNINSTALL_WEB" = "1" ] || [ "$UNINSTALL_OPENVPN" = "1" ]; }; then
+    warn "--dry-run cannot be combined with --uninstall-web or --uninstall-openvpn"
     exit 2
 fi
 
@@ -1442,17 +1522,492 @@ web_status() {
     return 0
 }
 
-########## Web protection: install, dry-run, status and uninstall ##########
+########## OpenVPN protection: detection, rendering and self-test ##########
+OPENVPN_LOG_FINAL=""
+OPENVPN_ACTION_FINAL=""
+OPENVPN_JAIL_INSTALLED=0
+OPENVPN_TMP_DIR=""
 
-########## --status / --uninstall-web: report or remove, then stop ##########
+########## Is an OpenVPN *server* configured on this host? ##########
+# A client-only host must not get this jail: a client's own "TLS handshake
+# failed"/"VERIFY ERROR" lines carry the remote server's address and would ban
+# it locally. Server detection is therefore configuration-based, not just
+# "the openvpn binary exists".
+openvpn_detected() {
+    local f
+    # Any config under /etc/openvpn/server is a server instance; a config
+    # elsewhere must actually contain a server directive (client configs use
+    # "client"/"remote" and are deliberately ignored). find runs through sudo
+    # so a 0700 config directory cannot hide the configuration.
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in
+            /etc/openvpn/server/*) return 0 ;;
+        esac
+        if sudo grep -qsE '^[[:space:]]*(server[[:space:]]|mode[[:space:]]+server|tls-server([[:space:]]|$))' "$f"; then
+            return 0
+        fi
+    done < <(sudo find /etc/openvpn -maxdepth 2 -type f -name '*.conf' 2>/dev/null || true)
+    # A running server unit is authoritative even with a non-standard config.
+    if command -v systemctl > /dev/null 2>&1 \
+       && systemctl list-units --type=service --state=running \
+              'openvpn-server@*.service' --no-legend 2>/dev/null \
+          | grep -q 'openvpn-server@'; then
+        return 0
+    fi
+    return 1
+}
+
+openvpn_should_install() {
+    case "$OPENVPN" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    # Naming the log explicitly is a request to install the jail, even when
+    # /etc/openvpn is not where this host keeps its configuration.
+    if [ -n "$OPENVPN_LOG" ]; then return 0; fi
+    openvpn_detected
+}
+
+########## Pick the first existing OpenVPN (or system) log ##########
+openvpn_find_log() {
+    local p
+    if [ -n "$OPENVPN_LOG" ]; then
+        if sudo test -f "$OPENVPN_LOG"; then
+            printf '%s\n' "$OPENVPN_LOG"
+            return 0
+        fi
+        warn "OpenVPN log not found: $OPENVPN_LOG"
+        return 1
+    fi
+    for p in /var/log/openvpn/server.log /var/log/openvpn.log \
+             /var/log/openvpn/openvpn.log /var/log/syslog /var/log/messages; do
+        if sudo test -f "$p"; then
+            printf '%s\n' "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+########## All-ports action: nftables when possible, else iptables ##########
+openvpn_pick_banaction() {
+    if [ -n "$OPENVPN_BANACTION" ]; then
+        printf '%s' "$OPENVPN_BANACTION"
+        return 0
+    fi
+    if command -v nft > /dev/null 2>&1 \
+       && sudo test -f /etc/fail2ban/action.d/nftables.conf \
+       && sudo nft list ruleset > /dev/null 2>&1; then
+        printf '%s' 'nftables[type=allports]'
+        return 0
+    fi
+    if sudo test -f /etc/fail2ban/action.d/iptables.conf; then
+        printf '%s' 'iptables[type=allports]'
+        return 0
+    fi
+    if command -v iptables > /dev/null 2>&1; then
+        printf '%s' 'iptables-allports'
+        return 0
+    fi
+    return 1
+}
+
+########## Resolve the OpenVPN log, action and ignoreip list ##########
+openvpn_discover() {
+    local log act n
+    log=$(openvpn_find_log) || return 1
+    OPENVPN_LOG_FINAL="$log"
+    act=$(openvpn_pick_banaction) || act=""
+    OPENVPN_ACTION_FINAL="$act"
+    if [ "${#WEB_IGNOREIP_FINAL[@]}" -eq 0 ]; then
+        web_collect_ignoreip
+    fi
+    info "openvpn log    : $OPENVPN_LOG_FINAL"
+    if [ -n "$OPENVPN_ACTION_FINAL" ]; then
+        info "openvpn action : $OPENVPN_ACTION_FINAL"
+    else
+        warn "no local allports ban action found; the jail will use Fail2Ban's default"
+    fi
+    n=$(web_tail 200 "$OPENVPN_LOG_FINAL" | grep -cE 'ovpn-server|openvpn' || true)
+    if [ "${n:-0}" -eq 0 ]; then
+        warn "no OpenVPN lines in the last 200 lines of $OPENVPN_LOG_FINAL"
+        warn "if OpenVPN logs only to journald, pass --openvpn-logpath or set backend = systemd"
+    fi
+    return 0
+}
+
+########## Staging directory, inside the web one so one trap cleans both ##########
+openvpn_staging_dir() {
+    web_staging_dir || return 1
+    OPENVPN_TMP_DIR="$WEB_TMP/openvpn"
+    mkdir -p "$OPENVPN_TMP_DIR" || return 1
+    return 0
+}
+
+########## The OpenVPN filter ##########
+# Two patterns cover the server-side failures:
+#   1) a peer prefix followed by an auth, certificate or TLS failure;
+#   2) an HMAC/packet-authentication failure, where the banned address is the
+#      one inside "from [AF_INET...]" (the prefix is optional and is never used
+#      as the banned address).
+# The daemon alternation covers ovpn-server[pid], openvpn[pid] and
+# openvpn-server[pid]; journalmatch is only used when the jail follows the
+# journal instead of the discovered file.
+openvpn_render_filter() {
+    printf '# Managed by fail2ban-setup.sh - do not edit by hand.\n'
+    printf '# Filter    : %s\n' "$OPENVPN_FILTER_NAME"
+    printf '# Generated : %s\n' "$(date -Is)"
+    printf '#\n'
+    printf '# Fail2Ban removes the syslog date before matching; %%(__prefix_line)s\n'
+    printf '# then consumes the "hostname daemon[pid]:" prefix and also matches a\n'
+    printf '# dedicated OpenVPN log that has no syslog prefix.\n'
+    printf '[INCLUDES]\n'
+    printf 'before = common.conf\n'
+    printf '\n'
+    printf '[Definition]\n'
+    printf '_daemon = (?:ovpn-server\\d*|openvpn(?:-server)?\\d*)\n'
+    printf 'journalmatch = _COMM=openvpn\n'
+    printf 'failregex = ^%%(__prefix_line)s<HOST>:\\d+ (?:TLS Auth Error:|VERIFY ERROR:|TLS Error: TLS handshake failed\\b|SIGUSR1\\[soft,(?:tls-error|connection-reset)\\] received\\b)\n'
+    printf '            ^%%(__prefix_line)s(?:[0-9A-Fa-f:.]+:\\d+ )?TLS Error: (?:incoming packet authentication failed|cannot locate HMAC in incoming packet) from \\[AF_INET6?\\]\\s*<HOST>:\\d+\n'
+    printf 'ignoreregex =\n'
+    return 0
+}
+
+########## The OpenVPN jail ##########
+# action = %(banaction)s keeps VPN bans out of the Cloudflare action even when
+# Cloudflare mode wired that action into [DEFAULT]. protocol tcp,udp is what
+# makes the allports action cover UDP OpenVPN as well.
+openvpn_render_jail() {
+    local log="$1" action="$2"
+    printf '# Managed by fail2ban-setup.sh - do not edit by hand.\n'
+    printf '# Generated : %s\n' "$(date -Is)"
+    printf '#\n'
+    printf '# Local-only on purpose: the Cloudflare action only covers HTTP.\n'
+    printf '# protocol tcp,udp makes the allports action block the VPN on both.\n'
+    printf '[openvpn]\n'
+    printf 'enabled   = true\n'
+    printf 'backend   = auto\n'
+    printf 'filter    = %s\n' "$OPENVPN_FILTER_NAME"
+    printf 'logpath   = %s\n' "$log"
+    printf 'protocol  = tcp,udp\n'
+    if [ -n "$action" ]; then
+        printf 'banaction = %s\n' "$action"
+        printf 'action    = %%(banaction)s\n'
+    fi
+    printf 'maxretry  = %s\n' "$OPENVPN_MAXRETRY"
+    printf 'findtime  = %s\n' "$OPENVPN_FINDTIME"
+    printf 'bantime   = %s\n' "$OPENVPN_BANTIME"
+    printf 'ignoreip  = %s\n' "$(web_render_ignoreip)"
+    return 0
+}
+
+########## OpenVPN reference log lines for the self-test ##########
+# Every attack line has a unique address. The first five mirror a syslog-fed
+# server (ovpn-server[pid]), the next four use the AF_INET/AF_INET6 from
+# address, one uses a 3-digit source port, and the last one mirrors a dedicated
+# OpenVPN log with an ISO timestamp and no syslog hostname/daemon prefix.
+openvpn_write_fixtures() {
+    local dir="$1"
+    cat > "$dir/attack.log" <<'EOF'
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.10:51611 TLS Auth Error: Auth Username/Password verification failed for peer
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.11:51612 VERIFY ERROR: depth=0, error=certificate has expired
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.12:51613 TLS Error: TLS handshake failed
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.13:51614 SIGUSR1[soft,tls-error] received, client-instance restarting
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.14:51615 SIGUSR1[soft,connection-reset] received, client-instance restarting
+Oct 17 12:00:00 host ovpn-server[1234]: TLS Error: incoming packet authentication failed from [AF_INET]192.0.2.15:51616
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.16:51617 TLS Error: incoming packet authentication failed from [AF_INET]192.0.2.16:51617
+Oct 17 12:00:00 host ovpn-server[1234]: TLS Error: cannot locate HMAC in incoming packet from [AF_INET6]2001:db8::15:51618
+Oct 17 12:00:00 host ovpn-server[1234]: 2001:db8::16:51619 TLS Error: cannot locate HMAC in incoming packet from [AF_INET6]2001:db8::16:51619
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.17:443 TLS Error: TLS handshake failed
+2026-10-17 12:00:00 192.0.2.30:51630 TLS Auth Error: Auth Username/Password verification failed for peer
+EOF
+    cat > "$dir/attack.expected.ips" <<'EOF'
+192.0.2.10
+192.0.2.11
+192.0.2.12
+192.0.2.13
+192.0.2.14
+192.0.2.15
+192.0.2.16
+2001:db8::15
+2001:db8::16
+192.0.2.17
+192.0.2.30
+EOF
+    cat > "$dir/legit.log" <<'EOF'
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.20:51620 [server] Peer Connection Initiated with [AF_INET]192.0.2.20:51620
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.21:51621 SIGUSR1[soft,ping-restart] received, client-instance restarting
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.22:51622 TLS: Initial packet from [AF_INET]192.0.2.22:51622, sid=0123456789abcdef
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.23:51623 VERIFY OK: depth=1, CN=Example CA
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.24:51624 Control Channel: TLSv1.3, cipher TLS_AES_256_GCM_SHA384
+Oct 17 12:00:00 host ovpn-server[1234]: 192.0.2.25:51625 TLS Error: TLS key negotiation failed to occur within 60 seconds (check your network connectivity)
+EOF
+    return 0
+}
+
+########## Probe whether this fail2ban-regex supports "-o ip" ##########
+# The probe is a trivial filter whose only line is a bare address: with -o ip
+# the output is that address, without it the normal report contains non-address
+# text, so only a pure address (or empty/None) counts as support.
+openvpn_selftest_probe_iptok() {
+    local out
+    printf '[Definition]\nfailregex = ^<HOST>$\n' > "$OPENVPN_TMP_DIR/probe.conf"
+    printf '192.0.2.99\n' > "$OPENVPN_TMP_DIR/probe.log"
+    out=$(LC_ALL=C fail2ban-regex -o ip "$OPENVPN_TMP_DIR/probe.log" \
+            "$OPENVPN_TMP_DIR/probe.conf" 2>/dev/null || true)
+    case "$out" in
+        ''|None*)
+            WEB_ST_IPTOK=0 ;;
+        *)
+            if printf '%s\n' "$out" | grep -qvE '^[0-9A-Fa-f:.]+(/[0-9]+)?$'; then
+                WEB_ST_IPTOK=0
+            else
+                WEB_ST_IPTOK=1
+            fi ;;
+    esac
+    return 0
+}
+
+########## Self-test: no legitimate line, every attack address ##########
+openvpn_selftest() {
+    local filter count fail=0 lines line
+    local hosts_all legit_hits miss_file
+    if ! command -v fail2ban-regex > /dev/null 2>&1; then
+        warn "self-test      : fail2ban-regex not found, skipping the OpenVPN rule check"
+        warn "self-test      : install fail2ban and re-run to validate the rules"
+        return 0
+    fi
+    openvpn_staging_dir || return 1
+    filter="$OPENVPN_TMP_DIR/$OPENVPN_FILTER_NAME.conf"
+    hosts_all="$OPENVPN_TMP_DIR/hosts.all"
+    legit_hits="$OPENVPN_TMP_DIR/legit.hosts"
+    miss_file="$OPENVPN_TMP_DIR/missing.ips"
+    openvpn_write_fixtures "$OPENVPN_TMP_DIR"
+    ########## The staged filter sits outside /etc/fail2ban/filter.d, so its
+    ########## "before = common.conf" must resolve next to it. Copy the distro
+    ########## include there; a missing include is reported as a load failure.
+    if sudo test -f "$FILTER_DIR/common.conf"; then
+        # cat through sudo, redirect as the caller: the staging directory and
+        # everything in it must stay removable by the caller's cleanup trap.
+        sudo cat "$FILTER_DIR/common.conf" > "$OPENVPN_TMP_DIR/common.conf" \
+            2>/dev/null || true
+    fi
+    openvpn_selftest_probe_iptok
+    : > "$hosts_all"
+    : > "$legit_hits"
+    step "Self-test: OpenVPN filter against reference server log lines"
+
+    # 1) A legitimate connection, reconnect or timeout must never be banned.
+    count=$(web_selftest_run "$OPENVPN_TMP_DIR/legit.log" "$filter" "$legit_hits")
+    if [ -z "$count" ]; then
+        fail=1
+        warn "self-test FAIL : the OpenVPN filter could not be loaded by fail2ban-regex"
+        tail -n 1 "$WEB_TMP/selftest.err" 2>/dev/null \
+            | while IFS= read -r line; do warn "  $line"; done
+    elif [ "$count" -gt 0 ]; then
+        fail=1
+        warn "self-test FAIL : the OpenVPN filter matched $count legitimate reference line(s)"
+        warn "  $(sort -u "$legit_hits" | tr '\n' ' ')"
+    else
+        info "self-test      : no legitimate OpenVPN line matched"
+    fi
+
+    # 2) Every attack line must be caught, and with -o ip the exact address.
+    count=$(web_selftest_run "$OPENVPN_TMP_DIR/attack.log" "$filter" "$hosts_all")
+    if [ -z "$count" ]; then
+        fail=1
+        warn "self-test FAIL : the OpenVPN filter could not be loaded by fail2ban-regex"
+        tail -n 1 "$WEB_TMP/selftest.err" 2>/dev/null \
+            | while IFS= read -r line; do warn "  $line"; done
+    elif [ "$WEB_ST_IPTOK" = "1" ]; then
+        web_selftest_missing "$OPENVPN_TMP_DIR/attack.expected.ips" "$hosts_all" > "$miss_file"
+        if [ -s "$miss_file" ]; then
+            fail=1
+            warn "self-test FAIL : these OpenVPN attack addresses would NOT be caught:"
+            head -n 5 "$miss_file" | while IFS= read -r line; do warn "  $line"; done
+        else
+            info "self-test      : all $(grep -c . "$OPENVPN_TMP_DIR/attack.expected.ips") reference OpenVPN attacks are caught"
+        fi
+    else
+        lines=$(grep -c . "$OPENVPN_TMP_DIR/attack.log")
+        if [ "$count" -lt "$lines" ]; then
+            fail=1
+            warn "self-test FAIL : only $count of $lines OpenVPN attack lines matched"
+        else
+            info "self-test      : all $lines reference OpenVPN attack lines are caught (count only)"
+        fi
+    fi
+    if [ "$fail" -eq 1 ]; then
+        if [ "$WEB_SELFTEST_STRICT" = "1" ]; then
+            warn "self-test      : --strict-selftest given, aborting before touching /etc/fail2ban"
+            return 1
+        fi
+        warn "self-test      : continuing anyway, review the failures above"
+    fi
+    return 0
+}
+
+########## OpenVPN: render, self-test and install ##########
+openvpn_install() {
+    local stamp
+    step "Rendering the OpenVPN filter and jail"
+    openvpn_staging_dir || return 1
+    if ! openvpn_render_filter > "$OPENVPN_TMP_DIR/$OPENVPN_FILTER_NAME.conf"; then
+        warn "could not render the OpenVPN filter"
+        return 1
+    fi
+    if ! openvpn_render_jail "$OPENVPN_LOG_FINAL" "$OPENVPN_ACTION_FINAL" \
+            > "$OPENVPN_TMP_DIR/jail.local"; then
+        warn "could not render the OpenVPN jail"
+        return 1
+    fi
+    if [ "$WEB_SELFTEST" = "1" ]; then
+        if ! openvpn_selftest; then
+            return 1
+        fi
+    else
+        info "self-test      : skipped (--no-selftest)"
+    fi
+    step "Installing the OpenVPN filter"
+    sudo mkdir -p "$FILTER_DIR" || return 1
+    if sudo test -f "$OPENVPN_FILTER_FILE" \
+       && ! sudo grep -q '^# Managed by fail2ban-setup.sh' "$OPENVPN_FILTER_FILE"; then
+        stamp=$(date +%Y%m%d%H%M%S)
+        if sudo cp -a "$OPENVPN_FILTER_FILE" "${OPENVPN_FILTER_FILE}.bak.${stamp}"; then
+            info "backup          : ${OPENVPN_FILTER_FILE}.bak.${stamp}"
+        else
+            warn "cannot back up $OPENVPN_FILTER_FILE"
+            return 1
+        fi
+    fi
+    if ! sudo install -m 0644 "$OPENVPN_TMP_DIR/$OPENVPN_FILTER_NAME.conf" \
+            "$OPENVPN_FILTER_FILE"; then
+        warn "cannot install $OPENVPN_FILTER_FILE"
+        return 1
+    fi
+    info "installed       : $OPENVPN_FILTER_FILE"
+    step "Installing the OpenVPN jail"
+    sudo mkdir -p "$(dirname "$OPENVPN_JAIL")" || return 1
+    if sudo test -f "$OPENVPN_JAIL" \
+       && ! sudo grep -q '^# Managed by fail2ban-setup.sh' "$OPENVPN_JAIL"; then
+        stamp=$(date +%Y%m%d%H%M%S)
+        if sudo cp -a "$OPENVPN_JAIL" "${OPENVPN_JAIL}.bak.${stamp}"; then
+            info "backup          : ${OPENVPN_JAIL}.bak.${stamp}"
+        else
+            warn "cannot back up $OPENVPN_JAIL"
+            return 1
+        fi
+    fi
+    if ! sudo install -m 0644 "$OPENVPN_TMP_DIR/jail.local" "$OPENVPN_JAIL"; then
+        warn "cannot install $OPENVPN_JAIL"
+        return 1
+    fi
+    info "installed       : $OPENVPN_JAIL"
+    OPENVPN_JAIL_INSTALLED=1
+    return 0
+}
+
+########## Print the OpenVPN filter and jail file (--dry-run) ##########
+openvpn_dry_run() {
+    openvpn_staging_dir || return 1
+    if ! openvpn_render_filter > "$OPENVPN_TMP_DIR/$OPENVPN_FILTER_NAME.conf"; then
+        warn "could not render the OpenVPN filter"
+        return 1
+    fi
+    if ! openvpn_render_jail "$OPENVPN_LOG_FINAL" "$OPENVPN_ACTION_FINAL" \
+            > "$OPENVPN_TMP_DIR/jail.local"; then
+        warn "could not render the OpenVPN jail"
+        return 1
+    fi
+    printf '\n# ---------- %s ----------\n' "$OPENVPN_FILTER_FILE"
+    cat -- "$OPENVPN_TMP_DIR/$OPENVPN_FILTER_NAME.conf"
+    printf '\n# ---------- %s ----------\n' "$OPENVPN_JAIL"
+    cat -- "$OPENVPN_TMP_DIR/jail.local"
+    return 0
+}
+
+########## Report the OpenVPN filter/jail and current bans (--status) ##########
+openvpn_status() {
+    local line
+    if sudo test -f "$OPENVPN_FILTER_FILE"; then
+        info "filter         : $OPENVPN_FILTER_FILE"
+    else
+        info "filter         : $OPENVPN_FILTER_FILE (absent)"
+    fi
+    if sudo test -f "$OPENVPN_JAIL"; then
+        info "jail file      : $OPENVPN_JAIL"
+    else
+        warn "jail file      : $OPENVPN_JAIL (MISSING - run without --status to install)"
+    fi
+    if ! command -v fail2ban-client > /dev/null 2>&1; then
+        warn "fail2ban-client not installed: cannot show the current OpenVPN bans"
+        return 0
+    fi
+    if ! sudo fail2ban-client status openvpn > /dev/null 2>&1; then
+        info "jail openvpn: not active"
+        return 0
+    fi
+    info "jail openvpn:"
+    while IFS= read -r line; do
+        info "    $line"
+    done < <(sudo fail2ban-client status openvpn 2> /dev/null \
+             | grep -E 'Currently banned|Total banned|Banned IP list' \
+             | sed -e 's/^[^A-Za-z]*//' || true)
+    return 0
+}
+
+########## Remove the OpenVPN filter and jail (--uninstall-openvpn) ##########
+openvpn_uninstall() {
+    local f removed=0
+    for f in "$OPENVPN_FILTER_FILE" "$OPENVPN_JAIL"; do
+        if sudo test -f "$f"; then
+            if sudo rm -f "$f"; then
+                info "removed         : $f"
+                removed=$((removed + 1))
+            else
+                warn "cannot remove $f"
+            fi
+        fi
+    done
+    if [ "$removed" -eq 0 ]; then
+        info "nothing to remove: no OpenVPN filter or jail file was installed"
+        return 0
+    fi
+    if command -v fail2ban-client > /dev/null 2>&1; then
+        if sudo fail2ban-client reload > /dev/null 2>&1; then
+            info "fail2ban reloaded without the OpenVPN jail"
+        else
+            warn "fail2ban-client reload failed (is the service running?)"
+        fi
+    fi
+    return 0
+}
+
+########## Web/OpenVPN protection: install, dry-run, status and uninstall ##########
+
+########## --status / --uninstall-*: report or remove, then stop ##########
 if [ "$STATUS_MODE" = "1" ]; then
     step "Web protection status"
     web_status
+    step "OpenVPN protection status"
+    if openvpn_should_install \
+       || sudo test -f "$OPENVPN_JAIL" || sudo test -f "$OPENVPN_FILTER_FILE"; then
+        openvpn_status
+    else
+        info "OpenVPN      : no server detected and nothing installed"
+    fi
     exit 0
 fi
-if [ "$UNINSTALL_WEB" = "1" ]; then
-    step "Removing the web protection filters and the jail file"
-    web_uninstall || exit 1
+if [ "$UNINSTALL_WEB" = "1" ] || [ "$UNINSTALL_OPENVPN" = "1" ]; then
+    if [ "$UNINSTALL_WEB" = "1" ]; then
+        step "Removing the web protection filters and the jail file"
+        web_uninstall || exit 1
+    fi
+    if [ "$UNINSTALL_OPENVPN" = "1" ]; then
+        step "Removing the OpenVPN filter and the jail file"
+        openvpn_uninstall || exit 1
+    fi
     exit 0
 fi
 
@@ -1499,33 +2054,80 @@ if [ "$HAS_CF" = "1" ]; then
     fi
 fi
 
-########## Web protection: discovery, then --dry-run returns here ##########
+########## Web and OpenVPN protection: discovery, then --dry-run returns here ##########
 WEB_ENABLED=1
-if [ "$WEB" != "1" ] && [ "$DRY_RUN" != "1" ]; then
+if [ "$WEB" != "1" ]; then
     WEB_ENABLED=0
-    step "Web protection disabled (--no-web)"
-    if sudo test -f "$WEB_JAIL" || sudo test -f "$FILTER_DIR/${WEB_FILTER_PROBE}.conf"; then
-        warn "a web jail from an earlier run is still installed:"
-        warn "  $WEB_JAIL"
-        warn "remove it by re-running with --uninstall-web"
+    if [ "$DRY_RUN" = "1" ]; then
+        info "web jails not rendered (--no-web)"
     else
-        info "no web jail installed, nothing to do"
+        step "Web protection disabled (--no-web)"
+        if sudo test -f "$WEB_JAIL" || sudo test -f "$FILTER_DIR/${WEB_FILTER_PROBE}.conf"; then
+            warn "a web jail from an earlier run is still installed:"
+            warn "  $WEB_JAIL"
+            warn "remove it by re-running with --uninstall-web"
+        else
+            info "no web jail installed, nothing to do"
+        fi
     fi
 fi
 
-if [ "$WEB_ENABLED" = "1" ] || [ "$DRY_RUN" = "1" ]; then
+OPENVPN_ENABLED=0
+if openvpn_should_install; then
+    OPENVPN_ENABLED=1
+else
+    if [ "$OPENVPN" = "0" ]; then
+        info "OpenVPN jail disabled (--no-openvpn)"
+    else
+        info "no OpenVPN server detected; the OpenVPN jail is not installed"
+    fi
+    if sudo test -f "$OPENVPN_JAIL" || sudo test -f "$OPENVPN_FILTER_FILE"; then
+        warn "an OpenVPN jail from an earlier run is still installed:"
+        warn "  $OPENVPN_JAIL"
+        warn "remove it by re-running with --uninstall-openvpn"
+    fi
+fi
+
+if [ "$WEB_ENABLED" = "1" ] || [ "$OPENVPN_ENABLED" = "1" ]; then
     web_staging_dir
     trap web_cleanup EXIT
+fi
+
+if [ "$WEB_ENABLED" = "1" ]; then
     step "Web protection: access logs and client address"
     if ! web_discover; then
         exit 1
     fi
 fi
 
+if [ "$OPENVPN_ENABLED" = "1" ]; then
+    step "OpenVPN protection: log, ban action and ignoreip"
+    if ! openvpn_discover; then
+        warn "OpenVPN protection will be skipped"
+        OPENVPN_ENABLED=0
+        if sudo test -f "$OPENVPN_JAIL" || sudo test -f "$OPENVPN_FILTER_FILE"; then
+            warn "an OpenVPN jail from an earlier run is still installed:"
+            warn "  $OPENVPN_JAIL"
+            warn "remove it by re-running with --uninstall-openvpn"
+        fi
+    fi
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
     step "Dry run: rendering the filters and the jail file (nothing is written)"
-    if ! web_dry_run; then
-        exit 1
+    if [ "$WEB_ENABLED" = "1" ]; then
+        if ! web_dry_run; then
+            exit 1
+        fi
+    else
+        info "web jails not rendered (--no-web)"
+    fi
+    if [ "$OPENVPN_ENABLED" = "1" ]; then
+        if ! openvpn_dry_run; then
+            exit 1
+        fi
+    else
+        info "OpenVPN jail not rendered (not detected or --no-openvpn)"
     fi
     info "dry run complete: no file written, Cloudflare untouched, no reload"
     exit 0
@@ -1672,6 +2274,16 @@ else
     info "web jails not installed (--no-web)"
 fi
 
+########## OpenVPN protection: install the filter and the jail (when enabled) ##########
+if [ "$OPENVPN_ENABLED" = "1" ]; then
+    if ! openvpn_install; then
+        warn "refusing to install an OpenVPN filter that did not pass its self-test"
+        exit 1
+    fi
+else
+    info "OpenVPN jail not installed"
+fi
+
 ########## Common: enable, validate and reload Fail2Ban ##########
 step "Enabling, validating and reloading Fail2Ban"
 if ! command -v fail2ban-client > /dev/null 2>&1; then
@@ -1692,6 +2304,9 @@ if [ "$HAS_CF" = "1" ]; then
     echo "Fail2Ban configured with the Cloudflare firewall integration (account ${CF_ACCOUNT})."
 else
     echo "Fail2Ban configured for local banning only (no Cloudflare)."
+fi
+if [ "$OPENVPN_JAIL_INSTALLED" = "1" ]; then
+    echo "OpenVPN jail installed: TLS/certificate/auth/HMAC failures are banned on all ports (TCP+UDP)."
 fi
 if [ "$CLEAR_SCREEN" = "1" ]; then clear || true; fi
 

@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 ---
 
 ### [`fail2ban-setup.sh`](linux-scripts/fail2ban-setup.sh)
-**Purpose:** Configures Fail2Ban, optionally extends banning to the Cloudflare firewall, and installs four stack-universal **web jails** that stop nginx attack traffic (probes, failed logins, enumeration, known scanners) on CloudPanel and plain Debian/Ubuntu hosts alike.
+**Purpose:** Configures Fail2Ban, optionally extends banning to the Cloudflare firewall, installs four stack-universal **web jails** that stop nginx attack traffic (probes, failed logins, enumeration, known scanners) on CloudPanel and plain Debian/Ubuntu hosts alike, and — when an OpenVPN *server* is detected — adds an **OpenVPN jail** that bans failed TLS/certificate/authentication/HMAC handshakes on every port, TCP and UDP.
 
 It runs **standalone** (separate from `cloudpanel-fix.sh`) and picks its mode from the
 command line:
@@ -139,9 +139,27 @@ Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
 | `web-badbots` | Known scanners by User-Agent (`sqlmap`, `wpscan`, `nuclei`, `masscan`, ...) — on by default, `--no-badbots` drops it |
 
 * The filters are **generated for the discovered logs**, not shipped blind: the script samples the discovered logs to decide which field really holds a bannable client address (`$remote_addr`, or one specific `X-Forwarded-For` hop when Cloudflare fronts the site without `real_ip`) and refuses to guess when guessing would ban the CDN edge; it then runs `fail2ban-regex` self-tests (every built-in reference attack must be caught and no legitimate reference line may match) and only then writes `/etc/fail2ban/filter.d/web-*.conf` plus one jail file, `/etc/fail2ban/jail.d/zz-fail2ban-setup.local`. An inconclusive self-test warns and continues by default; `--strict-selftest` makes it abort before anything is written.
-* The `ignoreip` of the running `sshd` jail is merged into every web jail (prose answers such as `No IP address/network is ignored` and trailing comments are dropped) and `127.0.0.1/8 ::1` is always appended, so a web ban can never lock you out of your own management addresses.
+* The `ignoreip` of the running `sshd` jail is merged into every web and OpenVPN jail (prose answers such as `No IP address/network is ignored` and trailing comments are dropped) and `127.0.0.1/8 ::1` is always appended, so a generated ban can never lock you out of your own management addresses.
 * `backend = auto` is written explicitly: Debian's `defaults-debian.conf` forces `backend = systemd` globally, which would leave these file-based jails monitoring nothing.
 * A jail file we did not write (no marker) is backed up (`*.bak.<timestamp>`) before being replaced; re-runs are byte-stable and take no second backup.
+
+**OpenVPN protection** (installed automatically when an OpenVPN *server* is detected; `--no-openvpn` skips it, `--openvpn` forces it, and an explicit `--openvpn-logpath` also enables it):
+
+| Setting | Value |
+|---------|-------|
+| Filter | `/etc/fail2ban/filter.d/openvpn-local.conf` — a distinct name, so the distro's `openvpn.conf` and any `openvpn.local` are never touched |
+| Jail | `/etc/fail2ban/jail.d/zz-fail2ban-setup-openvpn.local`, section `[openvpn]` |
+| Bans | `TLS Auth Error:`, `VERIFY ERROR:`, `TLS Error: TLS handshake failed`, `SIGUSR1[soft,tls-error]`, `SIGUSR1[soft,connection-reset]`, and HMAC/packet-authentication failures (`incoming packet authentication failed`, `cannot locate HMAC in incoming packet`) — IPv4 and IPv6 |
+| Ignores | successful connections, `ping-restart`, initial packets, `VERIFY OK`, control-channel lines and `TLS key negotiation failed` timeouts |
+| Action | local all-ports action: `nftables[type=allports]` when nftables is usable, else `iptables[type=allports]`, on `protocol = tcp,udp`. **Never** the Cloudflare action (Cloudflare only covers HTTP) |
+| Defaults | `maxretry = 3`, `findtime = 10m`, `bantime = 1h`; `ignoreip` merged from the `sshd` jail plus loopback |
+| Log | first of `/var/log/openvpn/server.log`, `/var/log/openvpn.log`, `/var/log/openvpn/openvpn.log`, `/var/log/syslog`, `/var/log/messages`; `--openvpn-logpath` overrides |
+
+* Detection is deliberately server-aware: a config under `/etc/openvpn/server/`, any config containing `server`, `mode server` or `tls-server`, or a running `openvpn-server@*.service`. A client-only host is skipped, because a client's own handshake failures carry the remote server's address and would ban it locally.
+* The filter matches Debian/Ubuntu syslog prefixes via `_daemon = (?:ovpn-server\d*|openvpn(?:-server)?\d*)` (`ovpn-server[pid]`, `openvpn[pid]`, `openvpn-server[pid]`) and also a dedicated OpenVPN log with no syslog prefix.
+* Before installing, a `fail2ban-regex` self-test uses realistic server lines: no legitimate line may match, and every reference attack address must be caught — IPv4, IPv6, a low source port (`:443`) and an ISO-timestamp dedicated-log line. It honours `--no-selftest` and `--strict-selftest`.
+* If no OpenVPN/system log file exists, the script warns and skips the jail. If a file exists but its last 200 lines contain no OpenVPN messages (e.g. journald-only logging), it warns that the jail may monitor nothing — feed a file with rsyslog and pass `--openvpn-logpath`, or set `backend = systemd` in the generated jail.
+* Re-runs are idempotent: a pre-existing `openvpn-local.conf`/jail file without the managed marker is backed up (`*.bak.<timestamp>`) before replacement.
 
 **Options** (values may also come from the matching environment variable):
 
@@ -163,14 +181,19 @@ Both modes then enable, validate (`fail2ban-client -t`) and reload Fail2Ban.
 | `--ip-source <mode>` | `WEB_IP_SOURCE` | `remote` \| `xforwarded` \| `auto` (default). `auto` picks `xforwarded` when Cloudflare edge addresses show up in the logs and nginx `real_ip` is not restored, and refuses to guess when guessing would ban the CDN edge instead of the attacker |
 | `--xff-hop <first\|last>` | `WEB_XFF_HOP` | Which `X-Forwarded-For` hop holds the client; `last` (default) is the one Cloudflare appends and a client cannot spoof |
 | `--logpath <glob>` / `--extra-logpath <glob>` | `WEB_LOG_GLOB` / `WEB_EXTRA_LOG_GLOB` | Replace / extend the auto-discovered access logs (repeatable) |
-| `--ignoreip <ip,cidr>` | `WEB_IGNOREIP` | Extra addresses whitelisted in every web jail, on top of the merged `sshd` list (repeatable) |
+| `--ignoreip <ip,cidr>` | `WEB_IGNOREIP` | Extra addresses whitelisted in every web and OpenVPN jail, on top of the merged `sshd` list (repeatable) |
 | `--allow-ua <regex>` / `--no-allowlist` | `WEB_ALLOW_UA` / `WEB_ALLOWLIST=0` | Extend / drop the built-in "never banned" User-Agent allow-list (Uptime Kuma, Pingdom, Datadog, ...) |
 | `--aggressive-login`, `--aggressive-enum` | `WEB_AGGRESSIVE_LOGIN`, `WEB_AGGRESSIVE_ENUM` | Widen `web-login` to generic `login`/`signin`/`admin` pages and `web-enum` to any `/wp-json/wp/v2/users/<id>` (more coverage, more false positives) |
 | `--web-maxretry <n>`, `--web-findtime <t>`, `--web-bantime <t>` | `WEB_MAXRETRY`, `WEB_FINDTIME`, `WEB_BANTIME` | Override the per-jail thresholds (e.g. `--web-findtime 10m --web-bantime 4h`) |
-| `--force-ip-source`, `--no-selftest`, `--strict-selftest` | `WEB_FORCE_IP_SOURCE`, `WEB_SELFTEST=0`, `WEB_SELFTEST_STRICT` | Override the safety gates: accept a refused IP source, skip the `fail2ban-regex` self-test, or make an inconclusive self-test fatal |
-| `--dry-run` | — | Print the filters and the jail file (and write nothing) |
-| `--status` | — | Show the web jails and their current/total bans, then exit |
-| `--uninstall-web` | — | Remove the web filters and jail file (keeps the Cloudflare helper and the local jail), then exit |
+| `--force-ip-source`, `--no-selftest`, `--strict-selftest` | `WEB_FORCE_IP_SOURCE`, `WEB_SELFTEST=0`, `WEB_SELFTEST_STRICT` | Override the safety gates: accept a refused IP source, skip the `fail2ban-regex` self-tests (web and OpenVPN), or make an inconclusive self-test fatal |
+| `--openvpn` / `--no-openvpn` | `OPENVPN` | Force / skip the OpenVPN jail (default: install when an OpenVPN server is detected) |
+| `--openvpn-logpath <path>` | `OPENVPN_LOG` | OpenVPN/syslog file to watch instead of auto-discovery (also enables the jail) |
+| `--openvpn-banaction <action>` | `OPENVPN_BANACTION` | Fail2Ban action for the OpenVPN jail (default: `nftables[type=allports]`, else `iptables[type=allports]`) |
+| `--openvpn-maxretry <n>`, `--openvpn-findtime <t>`, `--openvpn-bantime <t>` | `OPENVPN_MAXRETRY`, `OPENVPN_FINDTIME`, `OPENVPN_BANTIME` | OpenVPN thresholds (defaults: `3`, `10m`, `1h`) |
+| `--dry-run` | — | Print the filters and the jail files (and write nothing) |
+| `--status` | — | Show the web and OpenVPN jails and their current/total bans, then exit |
+| `--uninstall-web` | — | Remove the web filters and jail file (keeps the Cloudflare helper, the local jail and the OpenVPN jail), then exit |
+| `--uninstall-openvpn` | — | Remove only the OpenVPN filter and jail file, then exit |
 
 ```bash
 # With Cloudflare (recommended: a scoped Account Firewall Access Rules API token)
@@ -194,9 +217,21 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
   | sudo bash -s -- --ip-source xforwarded --xff-hop last
 
-# Remove the web jails again (Cloudflare helper and local jail are kept)
+# Remove the web jails again (Cloudflare helper, local jail and OpenVPN jail are kept)
 curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
   | sudo bash -s -- --uninstall-web
+
+# OpenVPN logging to a dedicated file (also enables the jail when detection fails)
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --openvpn-logpath /var/log/openvpn/server.log
+
+# Web jails only: skip the OpenVPN jail
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --no-openvpn
+
+# Remove only the OpenVPN filter and jail
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/fail2ban-setup.sh \
+  | sudo bash -s -- --uninstall-openvpn
 ```
 
 | Variable | Purpose |
@@ -204,7 +239,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `VERBOSE=1` | Runs the whole script under `set -x` with a `file:line:` prefix |
 | `CLEAR_SCREEN=1` | Clears the terminal at the end |
 
-> **Note:** in local mode the jail override is written to `/etc/fail2ban/jail.d/`, which is additive — CloudPanel values in `/etc/fail2ban/jail.local` still take precedence. The web jails live in the same directory (`jail.d/zz-fail2ban-setup.local`) and, because `jail.d` is parsed *after* `jail.local`, their per-jail settings win for those sections only. The Cloudflare helper is stored `700` (root-only) because it contains the credential.
+> **Note:** in local mode the jail override is written to `/etc/fail2ban/jail.d/`, which is additive — CloudPanel values in `/etc/fail2ban/jail.local` still take precedence. The web jails live in the same directory (`jail.d/zz-fail2ban-setup.local`) and, because `jail.d` is parsed *after* `jail.local`, their per-jail settings win for those sections only. The OpenVPN jail is separate (`jail.d/zz-fail2ban-setup-openvpn.local` + `filter.d/openvpn-local.conf`), local-only, and removed only by `--uninstall-openvpn`. The Cloudflare helper is stored `700` (root-only) because it contains the credential.
 
 ---
 
@@ -305,6 +340,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `systemd` | Required by `disable-services.sh` |
 | `nginx` | Required by `cloudpanel-fix.sh` |
 | [Fail2Ban](https://www.fail2ban.org/) | Required by `fail2ban-setup.sh`; also the service whose SSH access `fail2ban-ui-ssh-user.sh` provisions |
+| [OpenVPN](https://openvpn.net/) | Optional: when installed (or when `--openvpn-logpath`/`--openvpn` is given), `fail2ban-setup.sh` adds the local-only `[openvpn]` jail |
 | `curl` | Required by `fail2ban-setup.sh` in Cloudflare mode (API calls) and by the Fail2Ban UI's ban-notification callback on the managed host |
 | `jq` | Required by `fail2ban-setup.sh` in Cloudflare mode to parse API responses, and by the Fail2Ban UI's ban-notification callback on the managed host |
 | `openssh-server` | Required by `fail2ban-ui-ssh-user.sh`: the Fail2Ban UI connects to this host over SSH, and `sshd -T` feeds its read-only posture report |
