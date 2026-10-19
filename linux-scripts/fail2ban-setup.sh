@@ -483,25 +483,98 @@ web_cf_cidrs() {
     return 0
 }
 
-########## IPv4/IPv6 membership test, awk-only so that mawk works too ##########
+########## IPv4/IPv6 prefix membership test, awk-only so that mawk works too ##########
+# IPv6 is expanded to eight numeric groups first, so compressed and expanded
+# spellings compare equal and a prefix that does not end on a group boundary
+# (Cloudflare uses /29) is still honoured bit for bit. IPv4-mapped addresses
+# (::ffff:192.0.2.1) and IPv4 addresses inside the IPv6 form are supported too.
 ip_in_cidr() {
     awk -v ip="$1" -v cidr="$2" '
-        function v4(a,   p) { split(a, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+        function v4(a,   p, n, i, v) {
+            n = split(a, p, ".")
+            if (n != 4) return -1
+            v = 0
+            for (i = 1; i <= 4; i++) {
+                if (p[i] !~ /^[0-9]+$/ || p[i] + 0 > 255) return -1
+                v = v * 256 + p[i]
+            }
+            return v
+        }
+        # 2^e without the ^ operator: some awk builds (e.g. busybox) lack math.
+        function pow2(e,   p, i) {
+            p = 1
+            for (i = 0; i < e; i++) p *= 2
+            return p
+        }
+        function hx(h,   i, c, n) {
+            n = 0; h = tolower(h)
+            for (i = 1; i <= length(h); i++) {
+                c = index("0123456789abcdef", substr(h, i, 1))
+                if (c == 0) return -1
+                n = n * 16 + c - 1
+            }
+            return n
+        }
+        # Normalise one IPv6 address to eight decimal groups in out[1..8].
+        function expand6(s, out,   q, n, i, v, p, l, r, nl, nr, miss, a, b) {
+            # Never a valid address; without this ":::1" would pass as ::1.
+            if (s ~ /:::/) return 0
+            # A trailing dotted quad is the low 32 bits of the address.
+            if (s ~ /\./) {
+                q = s; sub(/^.*:/, "", q)
+                if (q !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return 0
+                v = v4(q)
+                if (v < 0 || v > 4294967295) return 0
+                sub(/[^:]*$/, sprintf("%x:%x", int(v / 65536), v % 65536), s)
+            }
+            if (s ~ /::/) {
+                p = index(s, "::")
+                l = substr(s, 1, p - 1); r = substr(s, p + 2)
+                if (r ~ /::/) return 0
+                nl = (l == "" ? 0 : split(l, a, ":"))
+                nr = (r == "" ? 0 : split(r, b, ":"))
+                miss = 8 - nl - nr
+                if (miss < 1) return 0
+                n = 0
+                for (i = 1; i <= nl; i++) out[++n] = a[i]
+                for (i = 1; i <= miss; i++) out[++n] = "0"
+                for (i = 1; i <= nr; i++) out[++n] = b[i]
+            } else {
+                n = split(s, a, ":")
+                if (n != 8) return 0
+                for (i = 1; i <= n; i++) out[i] = a[i]
+            }
+            for (i = 1; i <= 8; i++) {
+                if (out[i] == "") out[i] = "0"
+                v = hx(out[i])
+                if (v < 0 || v > 65535) return 0
+                out[i] = v
+            }
+            return 1
+        }
         BEGIN {
             split(cidr, c, "/")
-            net = c[1]; bits = (c[2] == "" ? 32 : c[2] + 0)
+            net = c[1]; bits = (c[2] == "" ? -1 : c[2] + 0)
             if (ip ~ /:/ || net ~ /:/) {
-                # IPv6: whole hex groups only, so a /29 is compared as a /32 and
-                # the test can only ever be broader than the real range.
-                n = int(bits / 16); if (n < 1) n = 1
-                split(tolower(ip), a, ":"); split(tolower(net), b, ":")
-                for (i = 1; i <= n; i++) { if (a[i] != b[i]) exit 1 }
+                # Never compare an IPv4 address with an IPv6 range.
+                if (ip !~ /:/ || net !~ /:/) exit 1
+                if (bits < 0) bits = 128
+                if (bits > 128) bits = 128
+                if (!expand6(ip, a) || !expand6(net, b)) exit 1
+                full = int(bits / 16); rem = bits % 16
+                for (i = 1; i <= full; i++) if (a[i] != b[i]) exit 1
+                if (rem > 0) {
+                    div = pow2(16 - rem)
+                    if (int(a[full + 1] / div) != int(b[full + 1] / div)) exit 1
+                }
                 exit 0
             }
-            if (bits < 0) bits = 0
+            if (bits < 0) bits = 32
             if (bits > 32) bits = 32
-            div = 2 ^ (32 - bits)
-            exit (int(v4(ip) / div) == int(v4(net) / div)) ? 0 : 1
+            va = v4(ip); vb = v4(net)
+            if (va < 0 || vb < 0) exit 1
+            div = pow2(32 - bits)
+            exit (int(va / div) == int(vb / div)) ? 0 : 1
         }'
 }
 
