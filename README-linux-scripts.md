@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 | Service | Typically disabled because |
 |---------|----------------------------|
-| `php7.1-fpm`, `php7.2-fpm`, `php7.3-fpm`, `php7.4-fpm`, `php8.0-fpm`, `php8.1-fpm` | End-of-life PHP branches: no upstream security fixes, and all of them are affected by the critical core RCEs CVE-2026-109618 / CVE-2026-109619 (CVSS 9.2) |
+| `php7.1-fpm` … `php8.1-fpm` (`phpX.Y-fpm` or `php-fpmX.Y` unit names) | End-of-life PHP branches: no upstream security fixes, and all of them are affected by the critical core RCEs CVE-2026-109618 / CVE-2026-109619 (CVSS 9.2) |
 | `memcached` | Cache not used by the application |
 | `postfix` | Local mail transfer agent not required |
 | `proftpd` | FTP server replaced by SFTP |
@@ -78,17 +78,22 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `varnish` | HTTP accelerator not in use |
 
 **Workflow:**
-1. Iterates over the `SERVICES` array.
-2. Skips any service that is not installed.
-3. Runs `systemctl disable <service> --now` for the rest (disables at boot **and** stops it immediately).
-
-> **Note:** `--now` stops the units immediately, so any site still served by one of these PHP branches goes down. Migrate it to a supported branch (8.2.35+, 8.3.36+, 8.4.27+ or 8.5.12+) before running the script. Disabling does not mask the units — run `systemctl mask <unit>` as well if a package upgrade must not be able to start them again.
+1. Resolves each branch in `PHP_VERSIONS` to the unit that actually exists (`phpX.Y-fpm.service`, else `php-fpmX.Y.service`); branches that are not installed are skipped.
+2. Refuses to stop a branch that nginx still references (`phpX.Y-fpm` found under `/etc/nginx` or `/home/*/conf`) unless `FORCE_PHP=1`, so a forgotten site is never taken down by accident.
+3. Runs `systemctl disable <unit> --now` (disables at boot **and** stops it immediately) and then `systemctl mask <unit>`, so package upgrades and `systemctl preset` cannot re-enable the pool.
+4. Repeats steps 1 and 3 for the remaining services in `SERVICES`, recording failures instead of aborting the run.
+5. Prints a `Disabled` / `Masked` / `Skipped` / `In use` / `Failed` summary and exits non-zero when something needs attention.
 
 **Configuration variables (edit inline):**
 
 | Variable | Purpose |
 |----------|---------|
-| `SERVICES` | Array of systemd unit names to disable and stop |
+| `PHP_VERSIONS` | End-of-life PHP branches to disable, stop and mask |
+| `SERVICES` | Other systemd unit names to disable and stop |
+| `MASK_PHP` | `1` (default) masks the PHP units; `0` only disables and stops them |
+| `FORCE_PHP` | `1` stops a PHP branch even when nginx still references it |
+
+> **Note:** `--now` stops the pools immediately, so any site still served by one of these branches goes down — that is why the nginx check blocks the action by default. Migrate sites to a patched branch first (8.3.36+, 8.4.27+ or 8.5.12+; 8.2.35 is also fixed but 8.2 reaches end of life on 2026-12-31). The packages stay installed, so CloudPanel keeps listing the version as unavailable/disabled; revert with `sudo systemctl unmask <unit>` and remove the branch from `PHP_VERSIONS`.
 
 ---
 
