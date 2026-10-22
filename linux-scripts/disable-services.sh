@@ -150,9 +150,35 @@ php_sockets() {
     done
 }
 
+########## Print the installed package that ships a PHP branch, if any ##########
+php_package() {
+    local version=$1
+    if command -v dpkg-query > /dev/null 2>&1; then
+        dpkg-query -W -f='${Status} ${Package} ${Version}\n' "php${version}-fpm" 2>/dev/null \
+            | grep '^install ok installed ' | cut -d' ' -f4- || true
+    elif command -v rpm > /dev/null 2>&1; then
+        rpm -q --qf '%{NAME} %{VERSION}-%{RELEASE}\n' "php${version}-php-fpm" 2>/dev/null || true
+    fi
+}
+
+########## Check whether ss sees a listening socket for a PHP branch ##########
+php_listening() {
+    local version=$1 count
+    if ! command -v ss > /dev/null 2>&1; then
+        echo "unknown"
+        return 0
+    fi
+    count=$(ss -lxH 2>/dev/null | grep -c "php${version}-fpm.sock" || true)
+    if [[ "${count}" -gt 0 ]]; then
+        echo "yes"
+    else
+        echo "no"
+    fi
+}
+
 ########## Report what a branch currently runs, without changing anything ##########
 php_status() {
-    local version=$1 unit active enabled procs refs files binaries sockets
+    local version=$1 unit active enabled procs refs files binaries sockets package listening
     if unit=$(php_unit "${version}"); then
         active=$(systemctl is-active "${unit}" 2>/dev/null || true)
         enabled=$(systemctl is-enabled "${unit}" 2>/dev/null || true)
@@ -169,8 +195,14 @@ php_status() {
     binaries="${binaries% }"
     sockets=$(php_sockets "${version}" | tr '\n' ' ')
     sockets="${sockets% }"
+    package=$(php_package "${version}")
+    listening=$(php_listening "${version}")
     echo "PHP ${version}: unit=${unit} active=${active} enabled=${enabled}" \
         "procs=${procs:--} nginx_refs=${refs} binary=${binaries:--}"
+    if [[ -n "${package}" ]]; then
+        echo "  package: ${package}"
+    fi
+    echo "  listening: ${listening}"
     if [[ "${refs}" -gt 0 ]]; then
         while IFS= read -r file; do
             echo "  referenced in: ${file}"
