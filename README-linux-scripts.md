@@ -77,12 +77,21 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `ufw` | Firewall managed elsewhere (e.g. cloud security groups) |
 | `varnish` | HTTP accelerator not in use |
 
+**Usage:**
+
+```bash
+sudo bash disable-services.sh            # disable, stop and mask everything configured
+sudo bash disable-services.sh --status   # read-only: what each EOL branch still runs
+sudo bash disable-services.sh --help
+```
+
 **Workflow:**
 1. Resolves each branch in `PHP_VERSIONS` to the unit that actually exists (`phpX.Y-fpm.service`, else `php-fpmX.Y.service`); branches that are not installed are skipped.
 2. Refuses to stop a branch that nginx still references (`phpX.Y-fpm` found under `/etc/nginx` or `/home/*/conf`) unless `FORCE_PHP=1`, so a forgotten site is never taken down by accident.
 3. Runs `systemctl disable <unit> --now` (disables at boot **and** stops it immediately) and then `systemctl mask <unit>`, so package upgrades and `systemctl preset` cannot re-enable the pool.
 4. Repeats steps 1 and 3 for the remaining services in `SERVICES`, recording failures instead of aborting the run.
 5. Prints a `Disabled` / `Masked` / `Skipped` / `In use` / `Failed` summary and exits non-zero when something needs attention.
+6. Re-checks `pgrep -x php-fpmX.Y` after each pool is stopped and reports a survivor as `Failed: php-fpmX.Y still running`, so a master started outside that unit cannot look contained.
 
 **Configuration variables (edit inline):**
 
@@ -94,6 +103,8 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 | `FORCE_PHP` | `1` stops a PHP branch even when nginx still references it |
 
 > **Note:** `--now` stops the pools immediately, so any site still served by one of these branches goes down — that is why the nginx check blocks the action by default. Migrate sites to a patched branch first (8.3.36+, 8.4.27+ or 8.5.12+; 8.2.35 is also fixed but 8.2 reaches end of life on 2026-12-31). The packages stay installed, so CloudPanel keeps listing the version as unavailable/disabled; revert with `sudo systemctl unmask <unit>` and remove the branch from `PHP_VERSIONS`.
+
+> **Verifying with `--status`:** the report prints `unit=`, `active=`, `enabled=`, `procs=` and `nginx_refs=` per branch. A branch is contained only when `active=inactive`, `procs` is empty and `enabled=masked` (or `disabled`). If `active=inactive` but `procs` is not empty, the master is not started by that unit — another unit, a container or a manual start still runs `/usr/sbin/php-fpmX.Y`, which is also why a `[fpm on]` style audit can keep reporting it.
 
 ---
 
