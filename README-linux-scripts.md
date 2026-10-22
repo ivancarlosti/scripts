@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 | Service | Typically disabled because |
 |---------|----------------------------|
-| `php7.1-fpm`, `php7.2-fpm`, `php7.3-fpm` | Outdated PHP versions replaced by a newer one |
+| `php7.1-fpm`, `php7.2-fpm`, `php7.3-fpm`, `php7.4-fpm`, `php8.0-fpm`, `php8.1-fpm` | End-of-life PHP branches: no upstream security fixes, and all of them are affected by the critical core RCEs CVE-2026-109618 / CVE-2026-109619 (CVSS 9.2) |
 | `memcached` | Cache not used by the application |
 | `postfix` | Local mail transfer agent not required |
 | `proftpd` | FTP server replaced by SFTP |
@@ -81,6 +81,8 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 1. Iterates over the `SERVICES` array.
 2. Skips any service that is not installed.
 3. Runs `systemctl disable <service> --now` for the rest (disables at boot **and** stops it immediately).
+
+> **Note:** `--now` stops the units immediately, so any site still served by one of these PHP branches goes down. Migrate it to a supported branch (8.2.35+, 8.3.36+, 8.4.27+ or 8.5.12+) before running the script. Disabling does not mask the units — run `systemctl mask <unit>` as well if a package upgrade must not be able to start them again.
 
 **Configuration variables (edit inline):**
 

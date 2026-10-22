@@ -6,10 +6,19 @@
 set -euo pipefail
 
 ########## Services to disable and stop ##########
+# PHP 7.1-8.1 are end-of-life and receive no fixes from the PHP project. They
+# are also affected by the critical core RCEs CVE-2026-109618 (RCE via OOM
+# corruption) and CVE-2026-109619 (RCE via stale global state), CVSS 9.2.
+# Upstream source-backports exist for 7.4, 8.0 and 8.1 only, so applications
+# still served by these branches must be migrated to a supported one (8.2+).
+# Stopping a pool with --now takes any site still using it offline.
 SERVICES=(
     php7.1-fpm
     php7.2-fpm
     php7.3-fpm
+    php7.4-fpm
+    php8.0-fpm
+    php8.1-fpm
     memcached
     postfix
     proftpd
