@@ -1,6 +1,6 @@
 # .scripts
 
-Collection of utility scripts for AWS infrastructure management, backup automation, Cloudflare email routing, OCI billing synchronization, and Linux server setup and hardening.  
+Collection of utility scripts for AWS infrastructure management, backup automation, Cloudflare email routing, OCI billing synchronization, Linux server setup and hardening, and read-only Linux/Windows system reporting.  
 **Version:** 4.0.11 | **Author:** Ivan Carlos | **License:** MIT
 
 ---
@@ -16,12 +16,14 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 ├── README-aws-lambda.md                     # AWS Lambda functions & IAM policies
 ├── README-backup-scripts.md                 # Linux backup & monitoring scripts
 ├── README-cloudflare-worker.md              # Cloudflare Workers for email routing
+├── README-computerinfo-scripts.md           # Linux & Windows system report scripts
 ├── README-linux-scripts.md                  # Linux server setup & hardening scripts
 ├── README-oci-scripting.md                  # OCI billing sync script
 │
 ├── aws-lambda/                              # 7 Python Lambda functions + 8 IAM policies
 ├── backup-scripts/                          # 4 shell scripts for DB/web backup
 ├── cloudflare-worker/                       # 2 JS workers for email routing
+├── computerinfo-scripts/                    # Linux & Windows system report scripts
 ├── linux-scripts/                           # 7 shell scripts for server setup & hardening
 └── oci-scripting/                           # 1 shell script for OCI billing sync
 ```
@@ -73,6 +75,30 @@ JavaScript Cloudflare Workers for **email routing** on domains using Cloudflare 
 | 2 | `worker-catch-all-and-administrative.js` | Forwards admin/security aliases; **catch-all** forwards everything else |
 
 📖 See **[README-cloudflare-worker.md](README-cloudflare-worker.md)** for deployment instructions, customization, and use cases.
+
+---
+
+### 🖥️ [`computerinfo-scripts/`](README-computerinfo-scripts.md)
+
+Read-only system report scripts for Linux and Windows: OS, CPU, memory, disk usage, uptime, load averages and network addressing — plus antivirus and Secure Boot state on Windows. Nothing is installed, changed or written, and no administrator rights are required.
+
+| # | Script | Purpose |
+|---|--------|---------|
+| 1 | `linuxcomputeinfo.sh` | Linux host report: OS, kernel, CPU and memory usage, disk totals and per-mount usage, uptime, load averages, local and public IPv4/IPv6 |
+| 2 | `windowscomputeinfo.ps1` | Windows host report: OS and build, hardware, RAM, physical and logical disks, registered antivirus products, Secure Boot state and mode |
+| 3 | `windowscomputeinfo.cmd` | Double-click launcher that runs the report with `-ExecutionPolicy Bypass` and keeps the window open |
+
+Scripts can be run remotely with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/computerinfo-scripts/linuxcomputeinfo.sh | bash
+```
+
+```powershell
+irm https://raw.githubusercontent.com/ivancarlosti/scripts/main/computerinfo-scripts/windowscomputeinfo.ps1 | iex
+```
+
+📖 See **[README-computerinfo-scripts.md](README-computerinfo-scripts.md)** for per-script field sources, switches (`-SkipAntivirus`, `-SkipSecureBoot`, `SKIP_PUBLIC_IP=1`), requirements, and local setup.
 
 ---
 
