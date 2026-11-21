@@ -1,25 +1,57 @@
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:ListAllMyBuckets",
-                "s3:GetBucketLocation"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:ListBucket",
-                "s3:GetObject",
-                "s3:GetObjectVersion"
-            ],
-            "Resource": [
-                "arn:aws:s3:::*",
-                "arn:aws:s3:::*/*"
-            ]
-        }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListAndLocateBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadSourceObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::*",
+        "arn:aws:s3:::*/*"
+      ]
+    },
+    {
+      "Sid": "WriteJobCheckpoint",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::*/_backup-state/*"
+    },
+    {
+      "Sid": "SelfInvokeForContinuation",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:*:*:function:*"
+    },
+    {
+      "Sid": "HardenBucketVersioning",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning"
+      ],
+      "Resource": "arn:aws:s3:::*"
+    },
+    {
+      "Sid": "HardenBucketLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetLifecycleConfiguration",
+        "s3:PutLifecycleConfiguration"
+      ],
+      "Resource": "arn:aws:s3:::*"
+    }
+  ]
 }
