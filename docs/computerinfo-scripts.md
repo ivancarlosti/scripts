@@ -1,5 +1,7 @@
 # Computer Info Scripts
 
+> Part of the [scripts](../README.md) collection.
+
 Read-only system report scripts for Linux and Windows. Both print the same set of sections — operating system, CPU, memory, disk usage, uptime, load averages and network addressing — so a ticket from either platform can be compared side by side. Nothing is installed, changed or written, and neither script needs administrator rights: the two Windows fields that do require elevation say `Requires administrator` instead of failing.
 
 > These scripts consolidate the standalone [lnxcomputerinfo](https://github.com/ivancarlosti/lnxcomputerinfo) and [wincomputerinfo](https://github.com/ivancarlosti/wincomputerinfo) projects.
@@ -34,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ## 📋 Scripts
 
-### [`linuxcomputeinfo.sh`](computerinfo-scripts/linuxcomputeinfo.sh)
+### [`linuxcomputeinfo.sh`](../computerinfo-scripts/linuxcomputeinfo.sh)
 
 **Purpose:** One-screen summary of a Linux host, printed between two `SYSTEM INFORMATION` rules.
 
@@ -66,7 +68,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ---
 
-### [`windowscomputeinfo.ps1`](computerinfo-scripts/windowscomputeinfo.ps1)
+### [`windowscomputeinfo.ps1`](../computerinfo-scripts/windowscomputeinfo.ps1)
 
 **Purpose:** The Windows counterpart of `linuxcomputeinfo.sh`, plus the two security sections the original `.bat` reported (registered antivirus products and Secure Boot).
 
@@ -115,7 +117,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\windowscomputeinfo.ps1 -Sk
 
 ---
 
-### [`windowscomputeinfo.cmd`](computerinfo-scripts/windowscomputeinfo.cmd)
+### [`windowscomputeinfo.cmd`](../computerinfo-scripts/windowscomputeinfo.cmd)
 
 **Purpose:** Double-click launcher, for hosts whose execution policy is `Restricted` (where double-clicking the `.ps1` itself is blocked).
 
@@ -171,7 +173,7 @@ set NO_PAUSE=1 && windowscomputeinfo.cmd
 
 ### 🪟 Windows
 
-1. **Download both files into the same folder** ([`windowscomputeinfo.ps1`](computerinfo-scripts/windowscomputeinfo.ps1) and [`windowscomputeinfo.cmd`](computerinfo-scripts/windowscomputeinfo.cmd)), either from a clone of this repository or from the raw links above.
+1. **Download both files into the same folder** ([`windowscomputeinfo.ps1`](../computerinfo-scripts/windowscomputeinfo.ps1) and [`windowscomputeinfo.cmd`](../computerinfo-scripts/windowscomputeinfo.cmd)), either from a clone of this repository or from the raw links above.
 
 2. **Double-click `windowscomputeinfo.cmd`**, or run one of:
 

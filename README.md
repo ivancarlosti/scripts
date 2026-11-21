@@ -1,7 +1,7 @@
 # .scripts
 
 Collection of utility scripts for AWS infrastructure management, backup automation, Cloudflare email routing, OCI billing synchronization, Linux server setup and hardening, and read-only Linux/Windows system reporting.  
-**Version:** 4.0.11 | **Author:** Ivan Carlos | **License:** MIT
+**Version:** 4.17.0 | **Author:** Ivan Carlos | **License:** MIT
 
 ---
 
@@ -13,12 +13,17 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 ├── manifest.json                            # Version & author metadata
 │
 ├── README.md                                # This file — project overview
-├── README-aws-lambda.md                     # AWS Lambda functions & IAM policies
-├── README-backup-scripts.md                 # Linux backup & monitoring scripts
-├── README-cloudflare-worker.md              # Cloudflare Workers for email routing
-├── README-computerinfo-scripts.md           # Linux & Windows system report scripts
-├── README-linux-scripts.md                  # Linux server setup & hardening scripts
-├── README-oci-scripting.md                  # OCI billing sync script
+├── .dockerignore                            # Excludes docs/, plans/, docker/, .github/
+│
+├── docs/                                    # Detailed documentation, one file per module
+│   ├── aws-lambda.md                        # AWS Lambda functions & IAM policies
+│   ├── backup-scripts.md                    # Linux backup & monitoring scripts
+│   ├── cloudflare-worker.md                 # Cloudflare Workers for email routing
+│   ├── computerinfo-scripts.md              # Linux & Windows system report scripts
+│   ├── linux-scripts.md                     # Linux server setup & hardening scripts
+│   └── oci-scripting.md                     # OCI billing sync script
+│
+├── plans/                                   # Implementation plans (yyyy-mm-dd-name.md)
 │
 ├── aws-lambda/                              # 7 Python Lambda functions + 8 IAM policies
 ├── backup-scripts/                          # 4 shell scripts for DB/web backup
@@ -32,7 +37,7 @@ Collection of utility scripts for AWS infrastructure management, backup automati
 
 ## 📂 Directory Overview
 
-### ☁️ [`aws-lambda/`](README-aws-lambda.md)
+### ☁️ [`aws-lambda/`](aws-lambda/)
 
 Python Lambda functions (runtime 3.13+) for AWS account management, invoked by **n8n** workflows.
 
@@ -44,13 +49,13 @@ Python Lambda functions (runtime 3.13+) for AWS account management, invoked by *
 | 4 | `dailyusage` | Daily AWS cost breakdown by tenant and usage type via Cost Explorer |
 | 5 | `monthlyusage` | Monthly AWS cost breakdown by tenant and service via Cost Explorer |
 | 6 | `route53-bind` | Exports all Route53 hosted zones as BIND zone file format |
-| 7 | `s3-to-backblaze` | Copies all S3 buckets to Backblaze B2 with timestamps and exclusions |
+| 7 | `s3-to-backblaze` | Chunked, resumable copy of all S3 buckets to Backblaze B2, with incremental skips and optional versioning/lifecycle hardening |
 
-📖 See **[README-aws-lambda.md](README-aws-lambda.md)** for full function details, IAM policy mappings, and remote invocation setup.
+📖 See **[docs/aws-lambda.md](docs/aws-lambda.md)** for full function details, IAM policy mappings, and remote invocation setup.
 
 ---
 
-### 💾 [`backup-scripts/`](README-backup-scripts.md)
+### 💾 [`backup-scripts/`](backup-scripts/)
 
 Shell scripts for Linux server backup automation.
 
@@ -61,11 +66,11 @@ Shell scripts for Linux server backup automation.
 | 3 | `checkbackup.sh` | Monitors rclone buckets for freshness, sends SES alerts if outdated |
 | 4 | `.dbpassword.cnf` | MySQL/MariaDB credential file for `mariadb-dump` |
 
-📖 See **[README-backup-scripts.md](README-backup-scripts.md)** for configuration variables, database support, requirements, and cron setup.
+📖 See **[docs/backup-scripts.md](docs/backup-scripts.md)** for configuration variables, database support, requirements, and cron setup.
 
 ---
 
-### 🌐 [`cloudflare-worker/`](README-cloudflare-worker.md)
+### 🌐 [`cloudflare-worker/`](cloudflare-worker/)
 
 JavaScript Cloudflare Workers for **email routing** on domains using Cloudflare Email Routing.
 
@@ -74,11 +79,11 @@ JavaScript Cloudflare Workers for **email routing** on domains using Cloudflare 
 | 1 | `worker-bounce-unknown-and-administrative.js` | Forwards admin/security aliases; **rejects** all unknown recipients |
 | 2 | `worker-catch-all-and-administrative.js` | Forwards admin/security aliases; **catch-all** forwards everything else |
 
-📖 See **[README-cloudflare-worker.md](README-cloudflare-worker.md)** for deployment instructions, customization, and use cases.
+📖 See **[docs/cloudflare-worker.md](docs/cloudflare-worker.md)** for deployment instructions, customization, and use cases.
 
 ---
 
-### 🖥️ [`computerinfo-scripts/`](README-computerinfo-scripts.md)
+### 🖥️ [`computerinfo-scripts/`](computerinfo-scripts/)
 
 Read-only system report scripts for Linux and Windows: OS, CPU, memory, disk usage, uptime, load averages and network addressing — plus antivirus and Secure Boot state on Windows. Nothing is installed, changed or written, and no administrator rights are required.
 
@@ -98,11 +103,11 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/computeri
 irm https://raw.githubusercontent.com/ivancarlosti/scripts/main/computerinfo-scripts/windowscomputeinfo.ps1 | iex
 ```
 
-📖 See **[README-computerinfo-scripts.md](README-computerinfo-scripts.md)** for per-script field sources, switches (`-SkipAntivirus`, `-SkipSecureBoot`, `SKIP_PUBLIC_IP=1`), requirements, and local setup.
+📖 See **[docs/computerinfo-scripts.md](docs/computerinfo-scripts.md)** for per-script field sources, switches (`-SkipAntivirus`, `-SkipSecureBoot`, `SKIP_PUBLIC_IP=1`), requirements, and local setup.
 
 ---
 
-### 🐧 [`linux-scripts/`](README-linux-scripts.md)
+### 🐧 [`linux-scripts/`](linux-scripts/)
 
 Shell scripts for setting up and hardening Linux servers (Debian/Ubuntu).
 
@@ -122,11 +127,11 @@ Scripts can be run remotely with:
 curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scripts/<script>.sh | sudo bash
 ```
 
-📖 See **[README-linux-scripts.md](README-linux-scripts.md)** for per-script details, requirements, and remote execution instructions.
+📖 See **[docs/linux-scripts.md](docs/linux-scripts.md)** for per-script details, requirements, and remote execution instructions.
 
 ---
 
-### 🗄️ [`oci-scripting/`](README-oci-scripting.md)
+### 🗄️ [`oci-scripting/`](oci-scripting/)
 
 Shell scripts for Oracle Cloud Infrastructure (OCI) automation.
 
@@ -134,7 +139,7 @@ Shell scripts for Oracle Cloud Infrastructure (OCI) automation.
 |---|--------|---------|
 | 1 | `sync_billing.sh` | Downloads OCI billing files from Object Storage with incremental sync and local retention cleanup |
 
-📖 See **[README-oci-scripting.md](README-oci-scripting.md)** for requirements (OCI CLI, jq), configuration, and cron setup.
+📖 See **[docs/oci-scripting.md](docs/oci-scripting.md)** for requirements (OCI CLI, jq), configuration, and cron setup.
 
 <!-- footer -->
 ---

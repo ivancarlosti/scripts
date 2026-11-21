@@ -1,12 +1,14 @@
 # Cloudflare Worker Scripts
 
+> Part of the [scripts](../README.md) collection.
+
 JavaScript Cloudflare Workers for **email routing** — processing incoming email on domains configured with Cloudflare Email Routing. Each worker handles both HTTP browser requests (status page) and SMTP email delivery.
 
 ---
 
 ## 📋 Workers
 
-### [`worker-bounce-unknown-and-administrative.js`](worker-bounce-unknown-and-administrative.js)
+### [`worker-bounce-unknown-and-administrative.js`](../cloudflare-worker/worker-bounce-unknown-and-administrative.js)
 **Strategy:** Known-aliases-only — **reject everything else**.
 
 | Aspect | Detail |
@@ -20,7 +22,7 @@ JavaScript Cloudflare Workers for **email routing** — processing incoming emai
 
 ---
 
-### [`worker-catch-all-and-administrative.js`](worker-catch-all-and-administrative.js)
+### [`worker-catch-all-and-administrative.js`](../cloudflare-worker/worker-catch-all-and-administrative.js)
 **Strategy:** Administrative routing + **catch-all for everything else**.
 
 | Aspect | Detail |

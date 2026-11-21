@@ -1,5 +1,7 @@
 # Linux Scripts
 
+> Part of the [scripts](../README.md) collection.
+
 Shell scripts for setting up and hardening Linux servers — baseline package installation, kernel tuning for Redis, disabling unused services, nginx hardening, Fail2Ban setup (with optional Cloudflare integration), a locked-down key-only SSH account for the Fail2Ban UI, and pointing the CloudPanel admin panel at a custom domain. Every script is idempotent and safe to re-run.
 
 ---
@@ -24,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ## 📋 Scripts
 
-### [`server-prep.sh`](linux-scripts/server-prep.sh)
+### [`server-prep.sh`](../linux-scripts/server-prep.sh)
 **Purpose:** Baseline preparation of a freshly provisioned Debian/Ubuntu server.
 
 **Workflow:**
@@ -41,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
-### [`redis-setup.sh`](linux-scripts/redis-setup.sh)
+### [`redis-setup.sh`](../linux-scripts/redis-setup.sh)
 **Purpose:** Applies the kernel settings Redis recommends for stable persistence and cluster operation.
 
 **Settings applied** (written to `/etc/sysctl.conf`, existing values replaced in place):
@@ -63,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
-### [`disable-services.sh`](linux-scripts/disable-services.sh)
+### [`disable-services.sh`](../linux-scripts/disable-services.sh)
 **Purpose:** Disables and stops services that are not needed on a typical web/application server, reducing resource usage and attack surface.
 
 **Services disabled:**
@@ -108,7 +110,7 @@ sudo bash disable-services.sh --help
 
 ---
 
-### [`cloudpanel-fix.sh`](linux-scripts/cloudpanel-fix.sh)
+### [`cloudpanel-fix.sh`](../linux-scripts/cloudpanel-fix.sh)
 **Purpose:** Hardens nginx on CloudPanel.
 
 **Workflow:**
@@ -134,7 +136,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
-### [`fail2ban-setup.sh`](linux-scripts/fail2ban-setup.sh)
+### [`fail2ban-setup.sh`](../linux-scripts/fail2ban-setup.sh)
 **Purpose:** Configures Fail2Ban, optionally extends banning to the Cloudflare firewall, installs four stack-universal **web jails** that stop nginx attack traffic (probes, failed logins, enumeration, known scanners) on CloudPanel and plain Debian/Ubuntu hosts alike, and — when an OpenVPN *server* is detected — adds an **OpenVPN jail** that bans failed TLS/certificate/authentication/HMAC handshakes on every port, TCP and UDP.
 
 It runs **standalone** (separate from `cloudpanel-fix.sh`) and picks its mode from the
@@ -279,7 +281,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
-### [`dashboard-domain.sh`](linux-scripts/dashboard-domain.sh)
+### [`dashboard-domain.sh`](../linux-scripts/dashboard-domain.sh)
 **Purpose:** Points the CloudPanel admin panel at a custom hostname (instead of the default `https://<server-ip>:8443`), has CloudPanel issue a Let's Encrypt certificate for it (falling back to `certbot`), registers the domain with CloudPanel itself so its own settings page and renewal cron see it, and rewrites the domain stored in the CloudPanel database.
 
 **Workflow:**
@@ -296,7 +298,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 > **Why the port-443 vhost matters:** CloudPanel serves the admin panel itself from a listener of its own whose only server name is the catch-all `_` on port 8443, so `https://<domain>:8443` answers for **any** hostname pointed at the server. That is why the panel keeps working even when `/etc/nginx/sites-enabled/custom-domain.conf` does not exist — that file is only the panel's port-443 entry point (it reverse-proxies to `https://127.0.0.1:8443`). Without it, `https://<domain>` (port 443) is answered by the default server, which rejects the TLS handshake with `unrecognized name`. CloudPanel's own site vhosts live in `/etc/nginx/sites-enabled/` as well, and CloudPanel's renewal cron rewrites `custom-domain.conf` from its bundled template — so keep an eye on that file after a renewal.
 
-> **Why the certificate still validates without a port-80 vhost:** the file holds a single 443 server block, exactly like CloudPanel's current `custom-domain` template ([`cloudpanel-fix.sh`](linux-scripts/cloudpanel-fix.sh) writes the same one, with the same three build-dependent variants). The HTTP-01 token is written to CloudPanel's own challenge directory, `/home/clp/htdocs/app/files/public/.well-known/acme-challenge/`, which the panel listener serves with `auth_basic off`; the port-80 catch-all only has to redirect `http://<domain>/.well-known/...` to HTTPS, and Let's Encrypt follows that redirect (up to 10 hops) **without validating the certificate on the redirect target** — "since this challenge is intended to bootstrap valid certificates, it may encounter self-signed or expired certificates along the way" ([challenge types](https://letsencrypt.org/docs/challenge-types/)). That is also why the temporary self-signed placeholder cannot break issuance, and why `certbot --webroot` uses that same directory.
+> **Why the certificate still validates without a port-80 vhost:** the file holds a single 443 server block, exactly like CloudPanel's current `custom-domain` template ([`cloudpanel-fix.sh`](../linux-scripts/cloudpanel-fix.sh) writes the same one, with the same three build-dependent variants). The HTTP-01 token is written to CloudPanel's own challenge directory, `/home/clp/htdocs/app/files/public/.well-known/acme-challenge/`, which the panel listener serves with `auth_basic off`; the port-80 catch-all only has to redirect `http://<domain>/.well-known/...` to HTTPS, and Let's Encrypt follows that redirect (up to 10 hops) **without validating the certificate on the redirect target** — "since this challenge is intended to bootstrap valid certificates, it may encounter self-signed or expired certificates along the way" ([challenge types](https://letsencrypt.org/docs/challenge-types/)). That is also why the temporary self-signed placeholder cannot break issuance, and why `certbot --webroot` uses that same directory.
 
 **Usage:**
 
@@ -311,7 +313,7 @@ curl -fsSL https://raw.githubusercontent.com/ivancarlosti/scripts/main/linux-scr
 
 ---
 
-### [`fail2ban-ui-ssh-user.sh`](linux-scripts/fail2ban-ui-ssh-user.sh)
+### [`fail2ban-ui-ssh-user.sh`](../linux-scripts/fail2ban-ui-ssh-user.sh)
 **Purpose:** Creates (or updates) the dedicated, key-only SSH account that the [Fail2Ban UI](https://github.com/swissmakers/fail2ban-ui) uses to manage this host's Fail2Ban, grants it exactly the access that connector needs — and nothing more — and prints the generated RSA private key so it can be pasted into the UI.
 
 **Workflow:**

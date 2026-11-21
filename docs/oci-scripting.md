@@ -1,12 +1,14 @@
 # OCI Scripting
 
+> Part of the [scripts](../README.md) collection.
+
 Shell scripts for automating Oracle Cloud Infrastructure (OCI) operations.
 
 ---
 
 ## 📋 Scripts
 
-### [`sync_billing.sh`](sync_billing.sh)
+### [`sync_billing.sh`](../oci-scripting/sync_billing.sh)
 **Purpose:** Downloads OCI billing files from OCI Object Storage to a local directory with date-based filtering and automatic cleanup.
 
 **Workflow:**

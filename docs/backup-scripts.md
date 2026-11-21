@@ -1,12 +1,14 @@
 # Backup Scripts
 
+> Part of the [scripts](../README.md) collection.
+
 Shell scripts for automating Linux server backups — database dumps, web directory compression, offsite transfer via rclone, and bucket freshness monitoring with email alerts.
 
 ---
 
 ## 📋 Scripts
 
-### [`rclone.sh`](rclone.sh)
+### [`rclone.sh`](../backup-scripts/rclone.sh)
 **Purpose:** Full backup workflow: dump database → compress → upload to remote → enforce retention.
 
 **Workflow:**
@@ -30,12 +32,12 @@ Shell scripts for automating Linux server backups — database dumps, web direct
 | `PGPASSWORD` | (Optional) Postgres password if using Postgres instead of MariaDB |
 
 **Database support:**
-- **MariaDB/MySQL:** Uses `mariadb-dump` (or `mysqldump`) with credentials from [`.dbpassword.cnf`](.dbpassword.cnf).
+- **MariaDB/MySQL:** Uses `mariadb-dump` (or `mysqldump`) with credentials from [`.dbpassword.cnf`](../backup-scripts/.dbpassword.cnf).
 - **Postgres:** Commented out by default — uses `pg_dump` with `PGPASSWORD` environment variable.
 
 ---
 
-### [`bkppostgres.sh`](bkppostgres.sh)
+### [`bkppostgres.sh`](../backup-scripts/bkppostgres.sh)
 **Purpose:** Backs up an entire **Postgres instance running in Docker** using `pg_dumpall`.
 
 **Workflow:**
@@ -55,7 +57,7 @@ Shell scripts for automating Linux server backups — database dumps, web direct
 
 ---
 
-### [`checkbackup.sh`](checkbackup.sh)
+### [`checkbackup.sh`](../backup-scripts/checkbackup.sh)
 **Purpose:** Monitors rclone remote buckets for backup freshness and sends alerts via Amazon SES.
 
 **Workflow:**
@@ -74,7 +76,7 @@ Shell scripts for automating Linux server backups — database dumps, web direct
 
 ---
 
-### [`.dbpassword.cnf`](.dbpassword.cnf)
+### [`.dbpassword.cnf`](../backup-scripts/.dbpassword.cnf)
 **Purpose:** MySQL/MariaDB credential file used by `rclone.sh` via `--defaults-extra-file`.
 
 **Contents:**
